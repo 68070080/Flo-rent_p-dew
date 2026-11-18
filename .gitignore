@@ -1,0 +1,17 @@
+# Freebuff / chat attachments / OS junk
+.freebuff/
+.cloud-attachments/
+.DS_Store
+Thumbs.db
+
+# dependencies & secrets
+node_modules/
+.env
+.env.*
+*.log
+
+# runtime data & temporary test data (มีข้อมูลผู้ใช้จริง/รหัสผ่าน)
+server/data/
+server/.testdata*/
+server/.uidata/
+.tmp-node/

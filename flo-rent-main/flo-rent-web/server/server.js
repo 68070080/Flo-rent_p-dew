@@ -1,0 +1,1144 @@
+'use strict';
+
+/*
+ * FLO-RENT backend — Node.js มาตรฐาน ไม่ต้องติดตั้ง dependency
+ * รัน:  node server/server.js   (หรือ npm start)  →  http://127.0.0.1:4173
+ * ข้อมูลเก็บที่ server/data/db.json (กำหนดโฟลเดอร์เองได้ด้วย FLO_DATA_DIR)
+ */
+
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const auth = require('./auth');
+const db = require('./db');
+const seed = require('./seed');
+
+const PORT = Number(process.env.PORT || 4173);
+const HOST = process.env.HOST || '127.0.0.1';
+const ROOT = path.resolve(__dirname, '..', 'public');
+const MAX_BODY = 64 * 1024;
+const SESSION_TTL = 14 * 24 * 60 * 60 * 1000;
+const DAY = 86400000;
+
+const CATEGORIES = seed.CATEGORIES;
+const CATEGORY_KEYS = CATEGORIES.map(function (cat) { return cat.key; });
+
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'same-origin'
+};
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8'
+};
+
+/* ---------- helpers ---------- */
+
+function store() { return db.data(); }
+
+function sendJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, Object.assign({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store'
+  }, SECURITY_HEADERS));
+  res.end(body);
+}
+
+function fail(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  throw err;
+}
+
+function asString(value, label, options) {
+  const opts = Object.assign({ min: 0, max: 400, required: true }, options || {});
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text && opts.required) fail(400, label + ' จำเป็นต้องกรอก');
+  if (text && text.length < opts.min) fail(400, label + ' ต้องยาวอย่างน้อย ' + opts.min + ' ตัวอักษร');
+  if (text.length > opts.max) fail(400, label + ' ยาวเกิน ' + opts.max + ' ตัวอักษร');
+  return text;
+}
+
+function asInt(value, label, options) {
+  const opts = Object.assign({ min: 0, max: 10000000, required: true }, options || {});
+  if (value === undefined || value === null || value === '') {
+    if (opts.required) fail(400, label + ' จำเป็นต้องกรอก');
+    return null;
+  }
+  const num = Number(value);
+  if (!Number.isFinite(num) || Math.round(num) !== num) fail(400, label + ' ต้องเป็นจำนวนเต็ม');
+  if (num < opts.min || num > opts.max) {
+    fail(400, label + ' ต้องอยู่ระหว่าง ' + opts.min + ' ถึง ' + opts.max);
+  }
+  return num;
+}
+
+function asEnum(value, label, allowed) {
+  if (allowed.indexOf(value) === -1) fail(400, label + ' ไม่ถูกต้อง');
+  return value;
+}
+
+function asNumber(value, label, min, max) {
+  if (value === undefined || value === null || value === '') return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) fail(400, label + ' ต้องเป็นตัวเลข');
+  if (num < min || num > max) fail(400, label + ' ต้องอยู่ระหว่าง ' + min + ' ถึง ' + max);
+  return num;
+}
+
+function asDay(value, label) {
+  const text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) fail(400, label + ' ต้องอยู่ในรูปแบบ YYYY-MM-DD');
+  const date = new Date(text + 'T00:00:00Z');
+  if (isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== text) fail(400, label + ' ไม่ใช่วันที่ที่ถูกต้อง');
+  return text;
+}
+
+function asDayList(value, label) {
+  if (value === undefined || value === null || value === '') return [];
+  const raw = Array.isArray(value) ? value : String(value).split(',');
+  const seen = {};
+  const days = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const text = String(raw[i] || '').trim();
+    if (!text) continue;
+    const day = asDay(text, label);
+    if (seen[day]) continue;
+    seen[day] = true;
+    days.push(day);
+  }
+  if (days.length > 366) fail(400, label + ' เลือกได้ไม่เกิน 366 วัน');
+  return days.sort();
+}
+
+function catOf(key) {
+  for (let i = 0; i < CATEGORIES.length; i += 1) {
+    if (CATEGORIES[i].key === key) return CATEGORIES[i];
+  }
+  return { key: 'general', name: 'อุปกรณ์ทั่วไป', emoji: '📦' };
+}
+
+/* ---------- กระเป๋าเงิน / เครดิต ---------- */
+
+const WELCOME_TOPUP = 3000;
+const CREDIT_START = 70;
+const CREDIT_MIN_BOOKING = 40;
+
+function walletOf(user) {
+  return user && typeof user.wallet === 'number' ? user.wallet : 0;
+}
+
+function creditOf(user) {
+  if (!user || typeof user.credit !== 'number') return CREDIT_START;
+  return Math.max(0, Math.min(100, user.credit));
+}
+
+function creditLevel(score) {
+  if (score >= 80) return { key: 'excellent', label: 'ดีมาก' };
+  if (score >= 60) return { key: 'good', label: 'ดี' };
+  if (score >= 40) return { key: 'fair', label: 'พอใช้' };
+  return { key: 'low', label: 'ควรปรับปรุง' };
+}
+
+function pushLedger(user, data) {
+  const entry = {
+    id: auth.newId('tx'),
+    userId: user.id,
+    userName: user.name,
+    type: data.type,
+    amount: Number(data.amount) || 0,
+    balanceAfter: walletOf(user),
+    note: data.note || '',
+    ref: data.ref || '',
+    createdAt: new Date().toISOString()
+  };
+  store().ledger.unshift(entry);
+  if (store().ledger.length > 2000) store().ledger.length = 2000;
+  return entry;
+}
+
+function logEvent(action, detail, actor, ref) {
+  store().logs.unshift({
+    id: auth.newId('lg'),
+    action: action,
+    detail: detail || '',
+    actorId: actor ? actor.id : null,
+    actorName: actor ? actor.name : 'ระบบ',
+    ref: ref || '',
+    at: new Date().toISOString()
+  });
+  if (store().logs.length > 800) store().logs.length = 800;
+}
+
+function ensureWallet(user) {
+  if (typeof user.wallet !== 'number') {
+    user.wallet = WELCOME_TOPUP;
+    pushLedger(user, { type: 'topup', amount: WELCOME_TOPUP, note: 'เครดิตต้อนรับสมาชิกใหม่' });
+    logEvent('wallet.topup', 'ให้เครดิตต้อนรับ ' + WELCOME_TOPUP + ' FLO แก่ ' + user.name, null, user.id);
+  }
+  if (typeof user.credit !== 'number') user.credit = CREDIT_START;
+  return user;
+}
+
+function adjustCredit(user, delta, reason) {
+  const before = creditOf(user);
+  const after = Math.max(0, Math.min(100, before + delta));
+  if (after === before) return;
+  user.credit = after;
+  logEvent('credit.change', user.name + ': เครดิต ' + before + ' → ' + after + ' (' + reason + ')', null, user.id);
+}
+
+/* คืนเงิน/คืนมัดจำ/จ่ายค่าเช่า เมื่อการจองถูกยกเลิกหรือคืนของ (ทำครั้งเดียวต่อ hold) */
+function settleBooking(booking, next, actor) {
+  const hold = store().holds.find(function (entry) {
+    return entry.bookingCode === booking.code && entry.status === 'held';
+  });
+  if (!hold) return null;
+
+  const renter = store().users.find(function (user) { return user.id === hold.renterId; });
+  if (!renter) return null;
+  const owner = store().users.find(function (user) { return user.id === hold.ownerId; });
+
+  if (next === 'cancelled') {
+    const refund = hold.rent + hold.deposit;
+    renter.wallet = walletOf(renter) + refund;
+    pushLedger(renter, { type: 'refund', amount: refund, note: 'คืนเงินทั้งจำนวน · ' + booking.code, ref: booking.code });
+    hold.status = 'refunded';
+    hold.closedAt = new Date().toISOString();
+    adjustCredit(renter, -4, 'ยกเลิกการจอง ' + booking.code);
+    logEvent('wallet.refund', 'คืน ' + refund + ' FLO ให้ ' + renter.name + ' (' + booking.code + ')', actor, booking.code);
+    return 'refund';
+  }
+
+  if (next === 'returned') {
+    renter.wallet = walletOf(renter) + hold.deposit;
+    pushLedger(renter, { type: 'deposit-release', amount: hold.deposit, note: 'คืนมัดจำ · ' + booking.code, ref: booking.code });
+    if (owner) {
+      owner.wallet = walletOf(owner) + hold.rent;
+      pushLedger(owner, { type: 'payout', amount: hold.rent, note: 'ค่าเช่า · ' + booking.code, ref: booking.code });
+    }
+    hold.status = 'settled';
+    hold.closedAt = new Date().toISOString();
+    adjustCredit(renter, 2, 'คืนของครบตามกำหนด ' + booking.code);
+    if (owner) adjustCredit(owner, 1, 'ปล่อยเช่าสำเร็จ ' + booking.code);
+    logEvent('wallet.settle', 'คืนมัดจำ ' + hold.deposit + ' FLO · จ่ายค่าเช่า ' + hold.rent + ' FLO (' + booking.code + ')', actor, booking.code);
+    return 'settled';
+  }
+
+  return null;
+}
+
+function publicUser(user) {
+  return {
+    id: user.id, name: user.name, email: user.email, phone: user.phone,
+    age: user.age, location: user.location, avatar: user.avatar, bio: user.bio,
+    role: user.role, status: user.status, rating: user.rating, reviews: user.reviews,
+    wallet: walletOf(user), credit: creditOf(user), creditLevel: creditLevel(creditOf(user)).label,
+    joinedAt: user.joinedAt
+  };
+}
+
+function publicItem(item) {
+  return {
+    id: item.id, cat: item.cat, title: item.title, emoji: item.emoji,
+    price: item.price, deposit: item.deposit, owner: item.owner, ownerId: item.ownerId,
+    rating: item.rating, reviews: item.reviews, location: item.location,
+    tags: item.tags || [], desc: item.desc, terms: item.terms,
+    availableFrom: item.availableFrom || null,
+    unavailable: item.unavailable || [],
+    lat: typeof item.lat === 'number' ? item.lat : null,
+    lng: typeof item.lng === 'number' ? item.lng : null,
+    status: item.status, createdAt: item.createdAt
+  };
+}
+
+function publicRequest(request, viewer) {
+  const offers = request.offers || [];
+  const isOwner = !!viewer && viewer.id === request.userId;
+  const isAdmin = !!viewer && viewer.role === 'admin';
+  return {
+    id: request.id, want: request.want, cat: request.cat, budget: request.budget,
+    when: request.when, name: request.name, userId: request.userId, createdAt: request.createdAt,
+    offerCount: offers.length,
+    myOffer: !!viewer && offers.some(function (offer) { return offer.userId === viewer.id; }),
+    offers: isOwner || isAdmin ? offers : []
+  };
+}
+
+function findUserByEmail(email) {
+  const target = String(email || '').toLowerCase();
+  return store().users.find(function (user) { return user.email === target; }) || null;
+}
+
+function cleanupSessions() {
+  const now = Date.now();
+  const sessions = store().sessions;
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (!sessions[i] || sessions[i].expiresAt <= now) sessions.splice(i, 1);
+  }
+}
+
+function currentUser(req) {
+  const header = req.headers.authorization || '';
+  const match = /^Bearer ([a-f0-9]{16,64})$/i.exec(header.trim());
+  if (!match) return null;
+  cleanupSessions();
+  const token = match[1];
+  const session = store().sessions.find(function (item) { return item.token === token; });
+  if (!session) return null;
+  const user = store().users.find(function (item) { return item.id === session.userId; });
+  if (!user || user.status !== 'active') return null;
+  /* ผู้ใช้เก่าที่ยังไม่มีกระเป๋าเงิน: ให้เครดิตต้อนรับครั้งแรกที่เข้าใช้ */
+  ensureWallet(user);
+  return user;
+}
+
+function requireUser(req) {
+  const user = currentUser(req);
+  if (!user) fail(401, 'กรุณาเข้าสู่ระบบก่อน');
+  return user;
+}
+
+function requireAdmin(req) {
+  const user = requireUser(req);
+  if (user.role !== 'admin') fail(403, 'เฉพาะผู้ดูแลระบบเท่านั้น');
+  return user;
+}
+
+function createSession(user) {
+  const sessions = store().sessions;
+  const mine = sessions.filter(function (item) { return item.userId === user.id; });
+  if (mine.length >= 5) {
+    const oldest = mine.sort(function (a, b) { return a.createdAt - b.createdAt; })[0];
+    store().sessions = sessions.filter(function (item) { return item.token !== oldest.token; });
+  }
+  const token = auth.newToken();
+  store().sessions.push({
+    token: token,
+    userId: user.id,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + SESSION_TTL
+  });
+  db.persist();
+  return token;
+}
+
+function readBody(req) {
+  // บน Vercel ตัว runtime อ่านและ parse body ให้แล้ว (req.body) สตรีมจึงถูกใช้หมด — ถ้ารอ 'data'/'end' คำขอ POST จะค้างจน timeout
+  if (req.body !== undefined && req.body !== null) {
+    const given = req.body;
+    if (Buffer.isBuffer(given) || typeof given === 'string') {
+      const text = Buffer.isBuffer(given) ? given.toString('utf8') : given;
+      if (Buffer.byteLength(text) > MAX_BODY) { const big = new Error('ข้อมูลที่ส่งมามีขนาดใหญ่เกินไป'); big.status = 413; return Promise.reject(big); }
+      if (!text) return Promise.resolve({});
+      try { return Promise.resolve(JSON.parse(text)); } catch (err) { const bad = new Error('รูปแบบ JSON ไม่ถูกต้อง'); bad.status = 400; return Promise.reject(bad); }
+    }
+    return Promise.resolve(given);
+  }
+  return new Promise(function (resolve, reject) {
+    let size = 0;
+    const chunks = [];
+    req.on('data', function (chunk) {
+      size += chunk.length;
+      if (size > MAX_BODY) {
+        const err = new Error('ข้อมูลที่ส่งมามีขนาดใหญ่เกินไป');
+        err.status = 413;
+        reject(err);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', function () {
+      if (!chunks.length) return resolve({});
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch (err) {
+        const bad = new Error('รูปแบบ JSON ไม่ถูกต้อง');
+        bad.status = 400;
+        reject(bad);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+const rateBuckets = new Map();
+
+function allowAttempt(req, bucket) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const key = bucket + ':' + (forwarded || req.socket.remoteAddress || 'local');
+  const now = Date.now();
+  const record = rateBuckets.get(key);
+  if (!record || record.resetAt < now) {
+    rateBuckets.set(key, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  record.count += 1;
+  return record.count <= 20;
+}
+
+function parseTags(value) {
+  const list = Array.isArray(value) ? value : String(value || '').split(',');
+  return list
+    .map(function (tag) { return String(tag).trim(); })
+    .filter(Boolean)
+    .slice(0, 8)
+    .map(function (tag) { return tag.slice(0, 24); });
+}
+
+function haystack(item) {
+  return [item.title, item.owner, item.location, item.desc, item.terms, catOf(item.cat).name]
+    .concat(item.tags || [])
+    .join(' ')
+    .toLowerCase();
+}
+
+function sortItems(list, sort) {
+  if (sort === 'price-asc') return list.sort(function (a, b) { return a.price - b.price; });
+  if (sort === 'price-desc') return list.sort(function (a, b) { return b.price - a.price; });
+  if (sort === 'rating') return list.sort(function (a, b) { return b.rating - a.rating || b.reviews - a.reviews; });
+  if (sort === 'newest') return list.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+  return list.sort(function (a, b) { return b.rating - a.rating || b.reviews - a.reviews; });
+}
+
+function parseDay(value, label) {
+  const text = String(value || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) fail(400, label + ' ต้องอยู่ในรูปแบบ YYYY-MM-DD');
+  const date = new Date(text + 'T00:00:00Z');
+  if (isNaN(date.getTime())) fail(400, label + ' ไม่ใช่วันที่ที่ถูกต้อง');
+  return date;
+}
+
+function startOfTodayUtc() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function newBookingCode() {
+  for (let i = 0; i < 20; i += 1) {
+    const code = 'FLR-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+    const exists = store().bookings.some(function (booking) { return booking.code === code; });
+    if (!exists) return code;
+  }
+  fail(500, 'สร้างรหัสการจองไม่สำเร็จ กรุณาลองใหม่');
+}
+
+/* ---------- static files ---------- */
+
+function notFound(res) {
+  const body = '<!DOCTYPE html><html lang="th"><head><meta charset="utf-8"><title>ไม่พบหน้านี้ · FLO-RENT</title>' +
+    '<link rel="stylesheet" href="/css/style.css"></head><body><div class="page"><main class="container">' +
+    '<div class="empty"><h1 class="display display-sm">ไม่พบหน้านี้ (404)</h1>' +
+    '<p class="muted">ลิงก์อาจไม่ถูกต้องหรือไฟล์ถูกย้ายแล้ว</p>' +
+    '<a class="btn btn-cream" href="/index.html">กลับหน้าแรก</a></div></main></div></body></html>';
+  res.writeHead(404, Object.assign({ 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(body) }, SECURITY_HEADERS));
+  res.end(body);
+}
+
+function serveStatic(req, res, pathname) {
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); } catch (err) { return notFound(res); }
+  if (decoded === '/' || decoded === '') decoded = '/index.html';
+
+  const resolved = path.resolve(ROOT, '.' + decoded);
+  const relative = path.relative(ROOT, resolved);
+
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return notFound(res);
+  const parts = relative.split(path.sep);
+  if (parts[0] === 'server' || parts[0] === 'node_modules' || parts.some(function (part) { return part.startsWith('.'); })) {
+    return notFound(res);
+  }
+  if (parts[0] === 'package.json') return notFound(res);
+
+  fs.stat(resolved, function (err, stat) {
+    if (err || !stat.isFile()) return notFound(res);
+    const headers = Object.assign({
+      'Content-Type': MIME[path.extname(resolved).toLowerCase()] || 'application/octet-stream',
+      'Content-Length': stat.size,
+      'Cache-Control': 'no-cache'
+    }, SECURITY_HEADERS);
+    res.writeHead(200, headers);
+    if (req.method === 'HEAD') return res.end();
+    const stream = fs.createReadStream(resolved);
+    stream.on('error', function () { res.end(); });
+    stream.pipe(res);
+  });
+}
+
+/* ---------- API ---------- */
+
+async function handleApi(req, res, url) {
+  const method = req.method.toUpperCase();
+  const pathname = url.pathname.replace(/\/+$/, '');
+  const key = method + ' ' + pathname;
+
+  if (key === 'GET /api/health') {
+    return sendJson(res, 200, { ok: true, name: 'FLO-RENT API', time: new Date().toISOString(), uptime: Math.round(process.uptime()) });
+  }
+
+  if (key === 'GET /api/categories') {
+    return sendJson(res, 200, { categories: CATEGORIES });
+  }
+
+  /* ---- auth ---- */
+
+  if (key === 'POST /api/auth/register') {
+    if (!allowAttempt(req, 'register')) fail(429, 'พยายามสมัครหลายครั้งเกินไป กรุณารอสักครู่');
+    const payload = await readBody(req);
+    const name = asString(payload.name, 'ชื่อที่ใช้แสดง', { min: 2, max: 60 });
+    const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) fail(400, 'รูปแบบอีเมลไม่ถูกต้อง');
+    const password = String(payload.password || '');
+    if (password.length < 6) fail(400, 'รหัสผ่านต้องอย่างน้อย 6 ตัวอักษร');
+    if (password.length > 200) fail(400, 'รหัสผ่านยาวเกินไป');
+    const age = asInt(payload.age, 'อายุ', { min: 15, max: 99 });
+    if (findUserByEmail(email)) fail(409, 'อีเมลนี้มีบัญชีอยู่แล้ว');
+
+    const user = {
+      id: auth.newId('u'),
+      name: name,
+      email: email,
+      passHash: auth.hashPassword(password),
+      role: 'user',
+      status: 'active',
+      phone: asString(payload.phone, 'เบอร์โทร', { max: 30, required: false }) || '—',
+      age: age,
+      location: asString(payload.location, 'พื้นที่', { max: 80, required: false }) || 'กรุงเทพฯ',
+      avatar: asString(payload.avatar, 'รูปโปรไฟล์', { max: 8, required: false }) || '🙂',
+      bio: '',
+      rating: 5,
+      reviews: 0,
+      wallet: WELCOME_TOPUP,
+      credit: CREDIT_START,
+      joinedAt: new Date().toISOString()
+    };
+    store().users.push(user);
+    pushLedger(user, { type: 'topup', amount: WELCOME_TOPUP, note: 'เครดิตต้อนรับสมาชิกใหม่' });
+    logEvent('user.register', 'สมาชิกใหม่: ' + user.name + ' (' + user.email + ')', user, user.id);
+    db.persist();
+    const token = createSession(user);
+    return sendJson(res, 201, { token: token, user: publicUser(user) });
+  }
+
+  if (key === 'POST /api/auth/login') {
+    if (!allowAttempt(req, 'login')) fail(429, 'พยายามเข้าสู่ระบบหลายครั้งเกินไป กรุณารอสักครู่');
+    const payload = await readBody(req);
+    const email = asString(payload.email, 'อีเมล', { max: 120 }).toLowerCase();
+    const password = String(payload.password || '');
+    const user = findUserByEmail(email);
+    if (!user || !auth.verifyPassword(password, user.passHash)) fail(401, 'อีเมลหรือรหัสผ่านไม่ถูกต้อง');
+    if (user.status !== 'active') fail(403, 'บัญชีนี้ถูกระงับการใช้งาน กรุณาติดต่อทีมงาน');
+    ensureWallet(user);
+    const token = createSession(user);
+    return sendJson(res, 200, { token: token, user: publicUser(user) });
+  }
+
+  if (key === 'POST /api/auth/logout') {
+    const header = req.headers.authorization || '';
+    const match = /^Bearer ([a-f0-9]{16,64})$/i.exec(header.trim());
+    if (match) {
+      store().sessions = store().sessions.filter(function (session) { return session.token !== match[1]; });
+      db.persist();
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
+  if (key === 'GET /api/me') {
+    const user = requireUser(req);
+    const bookings = store().bookings.filter(function (booking) { return booking.userId === user.id; });
+    const listings = store().items.filter(function (item) { return item.ownerId === user.id; });
+    return sendJson(res, 200, {
+      user: publicUser(user),
+      stats: {
+        bookings: bookings.length,
+        active: bookings.filter(function (b) { return b.status === 'pending' || b.status === 'active'; }).length,
+        spent: bookings.filter(function (b) { return b.status !== 'cancelled'; })
+          .reduce(function (sum, b) { return sum + Number(b.total || 0); }, 0),
+        listings: listings.length
+      }
+    });
+  }
+
+  if (key === 'PATCH /api/me') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    if (payload.name !== undefined) user.name = asString(payload.name, 'ชื่อที่ใช้แสดง', { min: 2, max: 60 });
+    if (payload.phone !== undefined) user.phone = asString(payload.phone, 'เบอร์โทร', { max: 30, required: false }) || '—';
+    if (payload.age !== undefined) user.age = asInt(payload.age, 'อายุ', { min: 15, max: 99 });
+    if (payload.location !== undefined) user.location = asString(payload.location, 'พื้นที่', { max: 80, required: false }) || '—';
+    if (payload.bio !== undefined) user.bio = asString(payload.bio, 'แนะนำตัว', { max: 300, required: false });
+    if (payload.avatar !== undefined) user.avatar = asString(payload.avatar, 'รูปโปรไฟล์', { max: 8, required: false }) || '🙂';
+
+    store().items.forEach(function (item) {
+      if (item.ownerId === user.id) item.owner = user.name;
+    });
+
+    db.persist();
+    return sendJson(res, 200, { user: publicUser(user) });
+  }
+
+  /* ---- items ---- */
+
+  if (key === 'GET /api/items') {
+    const user = currentUser(req);
+    const mine = url.searchParams.get('mine') === '1';
+    if (mine && !user) fail(401, 'กรุณาเข้าสู่ระบบก่อน');
+
+    let items = store().items.slice();
+    if (mine) {
+      items = items.filter(function (item) { return item.ownerId === user.id; });
+    } else {
+      items = items.filter(function (item) { return item.status === 'published'; });
+    }
+
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const cat = String(url.searchParams.get('cat') || 'all');
+    const min = Number(url.searchParams.get('min') || 0);
+    const max = Number(url.searchParams.get('max') || 0);
+
+    if (cat !== 'all') items = items.filter(function (item) { return item.cat === cat; });
+    if (min > 0) items = items.filter(function (item) { return item.price >= min; });
+    if (max > 0) items = items.filter(function (item) { return item.price <= max; });
+    if (q) items = items.filter(function (item) { return haystack(item).indexOf(q) !== -1; });
+
+    sortItems(items, String(url.searchParams.get('sort') || 'recommended'));
+    return sendJson(res, 200, { items: items.map(publicItem), count: items.length });
+  }
+
+  if (key === 'POST /api/items') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    const cat = asEnum(String(payload.cat || ''), 'หมวดหมู่', CATEGORY_KEYS);
+    const item = {
+      id: auth.newId('usr'),
+      ownerId: user.id,
+      owner: user.name,
+      cat: cat,
+      title: asString(payload.title, 'ชื่อสินค้า', { min: 2, max: 120 }),
+      emoji: catOf(cat).emoji,
+      price: asInt(payload.price, 'ราคาเช่าต่อวัน', { min: 0, max: 1000000 }),
+      deposit: asInt(payload.deposit === undefined ? 0 : payload.deposit, 'เงินมัดจำ', { min: 0, max: 5000000, required: false }) || 0,
+      rating: 5,
+      reviews: 0,
+      location: asString(payload.location, 'พื้นที่', { max: 80, required: false }) || 'ไม่ระบุพื้นที่',
+      availableFrom: payload.availableFrom ? asDay(payload.availableFrom, 'วันที่เริ่มให้เช่า') : null,
+      unavailable: asDayList(payload.unavailable, 'วันที่ไม่ว่าง'),
+      lat: asNumber(payload.lat, 'ละติจูด', -90, 90),
+      lng: asNumber(payload.lng, 'ลองจิจูด', -180, 180),
+      tags: parseTags(payload.tags),
+      desc: asString(payload.desc, 'รายละเอียด', { max: 1200, required: false }) || 'ยังไม่มีรายละเอียด',
+      terms: asString(payload.terms, 'เงื่อนไข', { max: 600, required: false }) || 'ตกลงเงื่อนไขกับผู้เช่าโดยตรง · คืนของในสภาพเรียบร้อย',
+      status: 'published',
+      createdAt: new Date().toISOString()
+    };
+    store().items.unshift(item);
+    db.persist();
+    return sendJson(res, 201, { item: publicItem(item) });
+  }
+
+  const itemMatch = /^\/api\/items\/([\w-]+)$/.exec(pathname);
+  if (itemMatch) {
+    const id = itemMatch[1];
+    const item = store().items.find(function (entry) { return entry.id === id; });
+    if (!item) fail(404, 'ไม่พบสินค้าชิ้นนี้');
+    const viewer = currentUser(req);
+    const isOwner = viewer && viewer.id === item.ownerId;
+    const isAdmin = viewer && viewer.role === 'admin';
+
+    if (key === 'GET /api/items/' + id) {
+      if (item.status !== 'published' && !isOwner && !isAdmin) fail(404, 'ไม่พบสินค้าชิ้นนี้');
+      return sendJson(res, 200, { item: publicItem(item) });
+    }
+
+    if (method === 'PATCH') {
+      if (!isOwner && !isAdmin) fail(403, 'แก้ไขได้เฉพาะประกาศของตัวเอง');
+      const payload = await readBody(req);
+      if (payload.title !== undefined) item.title = asString(payload.title, 'ชื่อสินค้า', { min: 2, max: 120 });
+      if (payload.cat !== undefined) {
+        item.cat = asEnum(String(payload.cat), 'หมวดหมู่', CATEGORY_KEYS);
+        item.emoji = catOf(item.cat).emoji;
+      }
+      if (payload.price !== undefined) item.price = asInt(payload.price, 'ราคาเช่าต่อวัน', { min: 0, max: 1000000 });
+      if (payload.deposit !== undefined) item.deposit = asInt(payload.deposit, 'เงินมัดจำ', { min: 0, max: 5000000, required: false }) || 0;
+      if (payload.location !== undefined) item.location = asString(payload.location, 'พื้นที่', { max: 80, required: false }) || 'ไม่ระบุพื้นที่';
+      if (payload.availableFrom !== undefined) item.availableFrom = payload.availableFrom ? asDay(payload.availableFrom, 'วันที่เริ่มให้เช่า') : null;
+      if (payload.unavailable !== undefined) item.unavailable = asDayList(payload.unavailable, 'วันที่ไม่ว่าง');
+      if (payload.lat !== undefined) item.lat = asNumber(payload.lat, 'ละติจูด', -90, 90);
+      if (payload.lng !== undefined) item.lng = asNumber(payload.lng, 'ลองจิจูด', -180, 180);
+      if (payload.tags !== undefined) item.tags = parseTags(payload.tags);
+      if (payload.desc !== undefined) item.desc = asString(payload.desc, 'รายละเอียด', { max: 1200, required: false });
+      if (payload.terms !== undefined) item.terms = asString(payload.terms, 'เงื่อนไข', { max: 600, required: false });
+      if (payload.status !== undefined) item.status = asEnum(String(payload.status), 'สถานะประกาศ', ['published', 'hidden']);
+      db.persist();
+      return sendJson(res, 200, { item: publicItem(item) });
+    }
+
+    if (method === 'DELETE') {
+      if (!isOwner && !isAdmin) fail(403, 'ลบได้เฉพาะประกาศของตัวเอง');
+      store().items = store().items.filter(function (entry) { return entry.id !== id; });
+      db.persist();
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  /* ---- bookings ---- */
+
+  if (key === 'GET /api/bookings') {
+    const user = requireUser(req);
+    const list = store().bookings
+      .filter(function (booking) { return booking.userId === user.id; })
+      .sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return sendJson(res, 200, { bookings: list });
+  }
+
+  if (key === 'POST /api/bookings') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    const item = store().items.find(function (entry) { return entry.id === String(payload.itemId || ''); });
+    if (!item) fail(404, 'ไม่พบสินค้าชิ้นนี้');
+    if (item.status !== 'published' && item.ownerId !== user.id) fail(409, 'สินค้านี้ปิดรับการจองอยู่');
+    if (item.ownerId === user.id) fail(400, 'ไม่สามารถจองประกาศของตัวเองได้');
+
+    const start = parseDay(payload.start, 'วันที่เริ่มเช่า');
+    const end = parseDay(payload.end, 'วันที่คืน');
+    if (start < startOfTodayUtc()) fail(400, 'วันที่เริ่มเช่าต้องไม่เป็นวันในอดีต');
+    const days = Math.round((end - start) / DAY);
+    if (days < 1) fail(400, 'วันที่คืนต้องอยู่หลังวันที่เริ่มเช่า');
+    if (days > 90) fail(400, 'จองได้ครั้งละไม่เกิน 90 วัน');
+
+    const total = item.price * days + item.deposit;
+
+    ensureWallet(user);
+    const credit = creditOf(user);
+    if (credit < CREDIT_MIN_BOOKING) {
+      fail(403, 'เครดิตของคุณ ' + credit + '/100 ต่ำกว่าเกณฑ์การจอง (' + CREDIT_MIN_BOOKING + ') — คืนของให้ครบสัก 1–2 ครั้งเพื่อเพิ่มเครดิต');
+    }
+    if (walletOf(user) < total) {
+      fail(402, 'ยอดใน FLO-RENT Wallet ไม่พอ: ต้องใช้ ' + total + ' FLO แต่มี ' + walletOf(user) + ' FLO — เติมเงินที่หน้ากระเป๋าเงินก่อน');
+    }
+
+    const booking = {
+      code: newBookingCode(),
+      itemId: item.id,
+      itemTitle: item.title,
+      itemCat: item.cat,
+      itemEmoji: item.emoji,
+      owner: item.owner,
+      ownerId: item.ownerId,
+      userId: user.id,
+      userName: user.name,
+      status: 'pending',
+      start: String(payload.start),
+      end: String(payload.end),
+      days: days,
+      dayPrice: item.price,
+      deposit: item.deposit,
+      total: total,
+      paidWith: 'wallet',
+      paidAt: new Date().toISOString(),
+      creditAtBooking: credit,
+      createdAt: new Date().toISOString()
+    };
+
+    user.wallet = walletOf(user) - total;
+    store().bookings.unshift(booking);
+    store().holds.unshift({
+      id: auth.newId('hd'),
+      bookingCode: booking.code,
+      renterId: user.id,
+      ownerId: item.ownerId,
+      rent: item.price * days,
+      deposit: item.deposit,
+      status: 'held',
+      createdAt: new Date().toISOString()
+    });
+    pushLedger(user, {
+      type: 'hold',
+      amount: -total,
+      note: 'กันเงินค่าเช่า + มัดจำ · ' + item.title,
+      ref: booking.code
+    });
+    logEvent('wallet.hold', 'กันเงิน ' + total + ' FLO (' + (item.price * days) + ' ค่าเช่า + ' + item.deposit +
+      ' มัดจำ) · ' + booking.code, user, booking.code);
+    db.persist();
+    return sendJson(res, 201, { booking: booking, wallet: walletOf(user) });
+  }
+
+  const bookingMatch = /^\/api\/bookings\/([\w-]+)$/.exec(pathname);
+  if (bookingMatch && method === 'PATCH') {
+    const user = requireUser(req);
+    const code = bookingMatch[1];
+    const booking = store().bookings.find(function (entry) { return entry.code === code; });
+    if (!booking) fail(404, 'ไม่พบการจองนี้');
+    if (booking.userId !== user.id && user.role !== 'admin') fail(403, 'จัดการได้เฉพาะการจองของตัวเอง');
+
+    const payload = await readBody(req);
+    const action = asEnum(String(payload.action || ''), 'การกระทำ', ['cancel', 'return']);
+
+    if (action === 'cancel') {
+      if (booking.status !== 'pending' && user.role !== 'admin') fail(409, 'ยกเลิกได้เฉพาะการจองที่ยังไม่เริ่มใช้งาน');
+      booking.status = 'cancelled';
+      booking.cancelledAt = new Date().toISOString();
+    } else {
+      if (booking.status !== 'active' && booking.status !== 'pending' && user.role !== 'admin') {
+        fail(409, 'คืนสินค้าได้เฉพาะการจองที่กำลังใช้งาน');
+      }
+      booking.status = 'returned';
+      booking.returnedAt = new Date().toISOString();
+    }
+
+    settleBooking(booking, booking.status, user);
+    db.persist();
+    return sendJson(res, 200, { booking: booking, wallet: walletOf(user) });
+  }
+
+  /* ---- look for requests ---- */
+
+  if (key === 'GET /api/requests') {
+    const viewer = currentUser(req);
+    const list = store().requests.slice().sort(function (a, b) {
+      return String(b.createdAt).localeCompare(String(a.createdAt));
+    }).map(function (request) { return publicRequest(request, viewer); });
+    return sendJson(res, 200, { requests: list });
+  }
+
+  if (key === 'POST /api/requests') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    const request = {
+      id: auth.newId('rq'),
+      want: asString(payload.want, 'สิ่งที่ต้องการเช่า', { min: 2, max: 160 }),
+      cat: asEnum(String(payload.cat || 'all'), 'หมวดหมู่', ['all'].concat(CATEGORY_KEYS)),
+      budget: asInt(payload.budget === undefined ? 0 : payload.budget, 'งบต่อวัน', { min: 0, max: 1000000, required: false }) || 0,
+      when: asString(payload.when, 'ช่วงวันที่', { max: 60, required: false }) || 'ไม่ระบุ',
+      name: asString(payload.name, 'ชื่อผู้ประกาศ', { max: 60, required: false }) || user.name,
+      userId: user.id,
+      offers: [],
+      createdAt: new Date().toISOString()
+    };
+    store().requests.unshift(request);
+    db.persist();
+    return sendJson(res, 201, { request: publicRequest(request, user) });
+  }
+
+  /* เสนอประกาศของตัวเองให้คำขอตามหา (เจ้าของประกาศเท่านั้น) */
+  const offerMatch = /^\/api\/requests\/([\w-]+)\/offers$/.exec(pathname);
+  if (offerMatch && method === 'POST') {
+    const user = requireUser(req);
+    const target = store().requests.find(function (entry) { return entry.id === offerMatch[1]; });
+    if (!target) fail(404, 'ไม่พบคำขอนี้');
+    if (target.userId === user.id) fail(400, 'นี่คือคำขอของคุณเอง — รอให้คนอื่นเสนอของให้');
+
+    const payload = await readBody(req);
+    const item = store().items.find(function (entry) { return entry.id === String(payload.itemId || ''); });
+    if (!item) fail(404, 'ไม่พบประกาศที่เลือก');
+    if (item.ownerId !== user.id) fail(403, 'เสนอได้เฉพาะประกาศของคุณเอง');
+    if (item.status !== 'published') fail(409, 'ประกาศนี้ถูกซ่อนอยู่ — เผยแพร่ก่อนแล้วค่อยเสนอ');
+
+    if (!target.offers) target.offers = [];
+    const duplicate = target.offers.some(function (offer) { return offer.userId === user.id && offer.itemId === item.id; });
+    if (duplicate) fail(409, 'คุณเสนอประกาศนี้ให้คำขอนี้ไปแล้ว');
+
+    const offer = {
+      id: auth.newId('of'),
+      userId: user.id,
+      userName: user.name,
+      itemId: item.id,
+      itemTitle: item.title,
+      itemEmoji: item.emoji,
+      itemPrice: item.price,
+      note: asString(payload.note, 'ข้อความถึงผู้ประกาศ', { max: 200, required: false }),
+      createdAt: new Date().toISOString()
+    };
+    target.offers.push(offer);
+    db.persist();
+    return sendJson(res, 201, { offer: offer, request: publicRequest(target, user) });
+  }
+
+  /* ---- FLO-RENT wallet ---- */
+
+  if (key === 'GET /api/wallet') {
+    const user = requireUser(req);
+    const migrated = typeof user.wallet !== 'number';
+    ensureWallet(user);
+    if (migrated) db.persist();
+
+    const transactions = store().ledger
+      .filter(function (entry) { return entry.userId === user.id; })
+      .slice(0, 80);
+    const holds = store().holds
+      .filter(function (entry) { return entry.renterId === user.id && entry.status === 'held'; });
+
+    return sendJson(res, 200, {
+      balance: walletOf(user),
+      credit: creditOf(user),
+      level: creditLevel(creditOf(user)),
+      minBookingCredit: CREDIT_MIN_BOOKING,
+      transactions: transactions,
+      holds: holds
+    });
+  }
+
+  if (key === 'POST /api/wallet/topup') {
+    const user = requireUser(req);
+    ensureWallet(user);
+    const payload = await readBody(req);
+    const amount = asInt(payload.amount, 'จำนวนเงินที่เติม', { min: 1, max: 50000 });
+
+    user.wallet = walletOf(user) + amount;
+    const entry = pushLedger(user, { type: 'topup', amount: amount, note: 'เติมเงินเข้า FLO-RENT Wallet' });
+    logEvent('wallet.topup', user.name + ' เติม ' + amount + ' FLO (คงเหลือ ' + user.wallet + ' FLO)', user, entry.id);
+    db.persist();
+
+    return sendJson(res, 201, {
+      balance: user.wallet,
+      credit: creditOf(user),
+      level: creditLevel(creditOf(user)),
+      transaction: entry
+    });
+  }
+
+  /* ---- admin ---- */
+
+  if (key === 'GET /api/admin/wallet') {
+    requireAdmin(req);
+    const users = store().users;
+    const holds = store().holds.filter(function (hold) { return hold.status === 'held'; });
+    const summary = { wallets: 0, escrow: 0, topups: 0, payouts: 0, holds: holds.length, transactions: store().ledger.length };
+
+    users.forEach(function (user) { summary.wallets += walletOf(user); });
+    store().ledger.forEach(function (entry) {
+      if (entry.type === 'topup') summary.topups += entry.amount;
+      if (entry.type === 'payout') summary.payouts += entry.amount;
+    });
+    holds.forEach(function (hold) { summary.escrow += hold.rent + hold.deposit; });
+
+    return sendJson(res, 200, {
+      summary: summary,
+      transactions: store().ledger.slice(0, 150),
+      holds: holds,
+      users: users.map(function (user) {
+        return { id: user.id, name: user.name, email: user.email, wallet: walletOf(user), credit: creditOf(user) };
+      })
+    });
+  }
+
+  if (key === 'GET /api/admin/logs') {
+    requireAdmin(req);
+    return sendJson(res, 200, { logs: store().logs.slice(0, 200) });
+  }
+
+  if (key === 'GET /api/admin/stats') {
+    requireAdmin(req);
+    const users = store().users;
+    const items = store().items;
+    const bookings = store().bookings;
+    const statuses = ['pending', 'active', 'returned', 'cancelled'];
+    const byStatus = {};
+    statuses.forEach(function (status) {
+      byStatus[status] = bookings.filter(function (booking) { return booking.status === status; }).length;
+    });
+
+    return sendJson(res, 200, {
+      users: users.length,
+      suspended: users.filter(function (user) { return user.status === 'suspended'; }).length,
+      items: items.length,
+      published: items.filter(function (item) { return item.status === 'published'; }).length,
+      hidden: items.filter(function (item) { return item.status === 'hidden'; }).length,
+      bookings: bookings.length,
+      byStatus: byStatus,
+      revenue: bookings.filter(function (booking) { return booking.status !== 'cancelled'; })
+        .reduce(function (sum, booking) { return sum + Number(booking.total || 0); }, 0),
+      requests: store().requests.length,
+      walletTotal: users.reduce(function (sum, user) { return sum + walletOf(user); }, 0),
+      escrow: store().holds.filter(function (hold) { return hold.status === 'held'; })
+        .reduce(function (sum, hold) { return sum + hold.rent + hold.deposit; }, 0),
+      activeHolds: store().holds.filter(function (hold) { return hold.status === 'held'; }).length,
+      recentBookings: bookings.slice().sort(function (a, b) {
+        return String(b.createdAt).localeCompare(String(a.createdAt));
+      }).slice(0, 6)
+    });
+  }
+
+  if (key === 'GET /api/admin/users') {
+    requireAdmin(req);
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const bookings = store().bookings;
+    let users = store().users.map(function (user) {
+      const mine = bookings.filter(function (booking) { return booking.userId === user.id; });
+      return Object.assign(publicUser(user), {
+        bookingCount: mine.length,
+        spent: mine.filter(function (b) { return b.status !== 'cancelled'; })
+          .reduce(function (sum, b) { return sum + Number(b.total || 0); }, 0),
+        listingCount: store().items.filter(function (item) { return item.ownerId === user.id; }).length
+      });
+    });
+    if (q) users = users.filter(function (user) { return (user.name + ' ' + user.email).toLowerCase().indexOf(q) !== -1; });
+    users.sort(function (a, b) { return String(b.joinedAt).localeCompare(String(a.joinedAt)); });
+    return sendJson(res, 200, { users: users, count: users.length });
+  }
+
+  const adminUserMatch = /^\/api\/admin\/users\/([\w-]+)$/.exec(pathname);
+  if (adminUserMatch && method === 'PATCH') {
+    const admin = requireAdmin(req);
+    const target = store().users.find(function (user) { return user.id === adminUserMatch[1]; });
+    if (!target) fail(404, 'ไม่พบผู้ใช้นี้');
+    if (target.id === admin.id) fail(400, 'ไม่สามารถเปลี่ยนสิทธิ์บัญชีที่กำลังใช้งานอยู่');
+    const payload = await readBody(req);
+    if (payload.role !== undefined) target.role = asEnum(String(payload.role), 'บทบาท', ['user', 'admin']);
+    if (payload.status !== undefined) {
+      target.status = asEnum(String(payload.status), 'สถานะบัญชี', ['active', 'suspended']);
+      if (target.status === 'suspended') {
+        store().sessions = store().sessions.filter(function (session) { return session.userId !== target.id; });
+      }
+    }
+    db.persist();
+    return sendJson(res, 200, { user: publicUser(target) });
+  }
+
+  if (key === 'GET /api/admin/items') {
+    requireAdmin(req);
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    let items = store().items.slice();
+    if (q) {
+      items = items.filter(function (item) {
+        return (item.title + ' ' + item.owner + ' ' + item.id).toLowerCase().indexOf(q) !== -1;
+      });
+    }
+    items.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return sendJson(res, 200, { items: items.map(publicItem), count: items.length });
+  }
+
+  const adminItemMatch = /^\/api\/admin\/items\/([\w-]+)$/.exec(pathname);
+  if (adminItemMatch) {
+    requireAdmin(req);
+    const item = store().items.find(function (entry) { return entry.id === adminItemMatch[1]; });
+    if (!item) fail(404, 'ไม่พบสินค้านี้');
+
+    if (method === 'PATCH') {
+      const payload = await readBody(req);
+      item.status = asEnum(String(payload.status || ''), 'สถานะประกาศ', ['published', 'hidden']);
+      db.persist();
+      return sendJson(res, 200, { item: publicItem(item) });
+    }
+    if (method === 'DELETE') {
+      store().items = store().items.filter(function (entry) { return entry.id !== item.id; });
+      db.persist();
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+
+  if (key === 'GET /api/admin/bookings') {
+    requireAdmin(req);
+    const status = String(url.searchParams.get('status') || 'all');
+    let bookings = store().bookings.slice();
+    if (status !== 'all') bookings = bookings.filter(function (booking) { return booking.status === status; });
+    bookings.sort(function (a, b) { return String(b.createdAt).localeCompare(String(a.createdAt)); });
+    return sendJson(res, 200, { bookings: bookings, count: bookings.length });
+  }
+
+  const adminBookingMatch = /^\/api\/admin\/bookings\/([\w-]+)$/.exec(pathname);
+  if (adminBookingMatch && method === 'PATCH') {
+    requireAdmin(req);
+    const booking = store().bookings.find(function (entry) { return entry.code === adminBookingMatch[1]; });
+    if (!booking) fail(404, 'ไม่พบการจองนี้');
+    const payload = await readBody(req);
+    const next = asEnum(String(payload.status || ''), 'สถานะการจอง', ['pending', 'active', 'returned', 'cancelled']);
+    booking.status = next;
+    if (next === 'returned') booking.returnedAt = new Date().toISOString();
+    if (next === 'cancelled') booking.cancelledAt = new Date().toISOString();
+    settleBooking(booking, next, user);
+    db.persist();
+    return sendJson(res, 200, { booking: booking });
+  }
+
+  if (key === 'GET /api/admin/requests') {
+    requireAdmin(req);
+    const list = store().requests.slice().sort(function (a, b) {
+      return String(b.createdAt).localeCompare(String(a.createdAt));
+    });
+    return sendJson(res, 200, { requests: list, count: list.length });
+  }
+
+  const adminRequestMatch = /^\/api\/admin\/requests\/([\w-]+)$/.exec(pathname);
+  if (adminRequestMatch && method === 'DELETE') {
+    requireAdmin(req);
+    store().requests = store().requests.filter(function (request) { return request.id !== adminRequestMatch[1]; });
+    db.persist();
+    return sendJson(res, 200, { ok: true });
+  }
+
+  return sendJson(res, 404, { error: 'ไม่พบ API นี้' });
+}
+
+/* ---------- server ---------- */
+
+async function handle(req, res) {
+  const url = new URL(req.url, 'http://' + (req.headers.host || 'localhost'));
+
+  if (url.pathname === '/api' || url.pathname.indexOf('/api/') === 0) {
+    return handleApi(req, res, url);
+  }
+
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return sendJson(res, 405, { error: 'ไม่รองรับ method นี้' });
+  }
+
+  return serveStatic(req, res, url.pathname);
+}
+
+function respond(req, res) {
+  return handle(req, res).catch(function (err) {
+    const status = err && err.status ? err.status : 500;
+    if (status >= 500) console.error('[api]', err);
+    if (res.headersSent) return res.end();
+    sendJson(res, status, { error: status >= 500 ? 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' : err.message });
+  });
+}
+
+module.exports = { respond, seed };
+
+/* รันตรง ๆ (npm start) = เซิร์ฟเวอร์ปกติ / บน Vercel ไฟล์ api/index.js จะ require ไฟล์นี้ไปใช้แทน */
+if (require.main === module) {
+  db.init(seed.build);
+
+  const server = http.createServer(respond);
+
+  server.listen(PORT, HOST, function () {
+    console.log('FLO-RENT พร้อมใช้งานที่ http://' + HOST + ':' + PORT);
+    console.log('ไฟล์ข้อมูล: ' + db.DB_FILE);
+    console.log('บัญชีแอดมิน: admin@flo-rent.co / admin1234');
+  });
+
+  const shutdown = function (signal) {
+    console.log('\nได้รับสัญญาณ ' + signal + ' กำลังบันทึกข้อมูลและปิดเซิร์ฟเวอร์...');
+    db.flushSync();
+    server.close(function () { process.exit(0); });
+    setTimeout(function () { process.exit(0); }, 3000).unref();
+  };
+
+  process.on('SIGINT', function () { shutdown('SIGINT'); });
+  process.on('SIGTERM', function () { shutdown('SIGTERM'); });
+  process.on('uncaughtException', function (err) {
+    console.error('[fatal]', err);
+    db.flushSync();
+    process.exit(1);
+  });
+}
