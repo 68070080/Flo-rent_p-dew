@@ -49,6 +49,13 @@
           <label class="field span-2"><span>พื้นที่ / จุดนัดรับ</span>
             <input type="text" id="post-location" placeholder="เช่น กรุงเทพฯ · อารีย์">
           </label>
+          <label class="field span-2"><span>รูปสินค้า (สูงสุด 4 รูป)</span>
+            <input type="file" id="post-images" accept="image/jpeg,image/png,image/webp" multiple>
+          </label>
+          <div class="field span-2">
+            <div class="image-preview" id="post-images-preview"></div>
+            <p class="field-hint">รูปจะถูกย่อขนาดอัตโนมัติก่อนบันทึก · ไม่แนบก็ได้ ระบบจะใช้ไอคอนหมวดหมู่แทน</p>
+          </div>
           <div class="field span-2">
             <span>ตำแหน่งสินค้า (ปักหมุดบนแผนที่)</span>
             <div class="pick-map" id="post-map"></div>

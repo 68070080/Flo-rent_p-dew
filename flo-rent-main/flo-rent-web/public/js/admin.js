@@ -10,6 +10,7 @@
     ['overview', 'ภาพรวม'],
     ['users', 'ผู้ใช้'],
     ['items', 'ประกาศ'],
+    ['categories', 'หมวดหมู่'],
     ['bookings', 'การจอง'],
     ['requests', 'คำขอตามหา'],
     ['wallet', 'กระเป๋าเงิน'],
@@ -44,6 +45,8 @@
   var userQuery = '';
   var itemQuery = '';
   var bookingFilter = 'all';
+  var cats = { items: [], jobs: [] };
+  var catEdit = null;
   var busy = false;
 
   function esc(value) {
@@ -178,7 +181,10 @@
       } else if (tab === 'users') {
         users = (await API.get(query('/admin/users?q=' + encodeURIComponent(userQuery)))).users;
       } else if (tab === 'items') {
+        await loadCats();
         items = (await API.get(query('/admin/items?q=' + encodeURIComponent(itemQuery)))).items;
+      } else if (tab === 'categories') {
+        await loadCats();
       } else if (tab === 'bookings') {
         bookings = (await API.get(query('/admin/bookings?status=' + encodeURIComponent(bookingFilter)))).bookings;
       } else if (tab === 'requests') {
@@ -197,6 +203,12 @@
     }
     root.removeAttribute('aria-busy');
     paint();
+  }
+
+  async function loadCats() {
+    var data = await API.get(query('/admin/categories'));
+    cats = { items: data.items || [], jobs: data.jobs || [] };
+    CATS = cats.items;
   }
 
   function paint() {
@@ -226,6 +238,7 @@
     if (tab === 'overview') return overviewPanel();
     if (tab === 'users') return usersPanel();
     if (tab === 'items') return itemsPanel();
+    if (tab === 'categories') return categoriesPanel();
     if (tab === 'bookings') return bookingsPanel();
     if (tab === 'requests') return requestsPanel();
     if (tab === 'wallet') return walletPanel();
@@ -272,6 +285,60 @@
           '<tbody>' + recent + '</tbody>' +
         '</table></div>' +
       '</div>';
+  }
+
+  /* ---- categories ---- */
+
+  function catRow(cat, kind) {
+    return '<tr>' +
+      '<td style="font-size:18px">' + esc(cat.emoji) + '</td>' +
+      '<td class="row-title">' + esc(cat.name) +
+        '<div class="muted" style="font-size:11.5px">' + esc(cat.key) + '</div></td>' +
+      '<td>' + esc(cat.sub || '—') + '</td>' +
+      '<td>' + Number(cat.usage || 0) + '</td>' +
+      '<td>' +
+        '<button class="btn-ghost" type="button" data-cat-edit="' + kind + ':' + esc(cat.key) + '">แก้ไข</button>' +
+        '<button class="btn-ghost" type="button" data-cat-delete="' + kind + ':' + esc(cat.key) + '">ลบ</button>' +
+      '</td>' +
+    '</tr>';
+  }
+
+  function catForm(kind) {
+    var editing = catEdit && catEdit.kind === kind
+      ? (cats[kind] || []).find(function (cat) { return cat.key === catEdit.key; })
+      : null;
+
+    return '' +
+      '<form class="admin-toolbar" data-cat-form="' + kind + '" style="margin-top:16px;align-items:flex-end;flex-wrap:wrap">' +
+        '<label class="field" style="width:80px"><span>ไอคอน</span>' +
+          '<input name="emoji" maxlength="4" value="' + esc(editing ? editing.emoji : '') + '" placeholder="📦"></label>' +
+        '<label class="field" style="flex:1;min-width:170px"><span>ชื่อหมวดหมู่</span>' +
+          '<input name="name" required value="' + esc(editing ? editing.name : '') + '" placeholder="ชื่อหมวดหมู่"></label>' +
+        '<label class="field" style="flex:1;min-width:170px"><span>คำอธิบาย</span>' +
+          '<input name="sub" value="' + esc(editing ? (editing.sub || '') : '') + '" placeholder="เช่น กล้อง · อุปกรณ์แสง-เสียง"></label>' +
+        '<button class="btn btn-maroon btn-sm" type="submit">' + (editing ? 'บันทึกการแก้ไข' : 'เพิ่มหมวดหมู่') + '</button>' +
+        (editing ? '<button class="btn btn-ghost btn-sm" type="button" data-cat-cancel="' + kind + '">ยกเลิก</button>' : '') +
+      '</form>' +
+      (editing ? '<p class="item-meta" style="margin-top:8px">กำลังแก้ไข “' + esc(editing.name) + '” — ชื่อใหม่จะเปลี่ยนทุกหน้าที่อ้างถึง</p>' : '');
+  }
+
+  function categoriesPanel() {
+    function block(kind, title) {
+      var list = cats[kind] || [];
+      var rows = list.length ? list.map(function (cat) { return catRow(cat, kind); }).join('') : emptyRow(5, 'ยังไม่มีหมวดหมู่');
+      return '' +
+        '<div class="admin-panel">' +
+          '<h2>' + title + ' (' + list.length + ')</h2>' +
+          '<p class="item-meta">เพิ่ม ลบ แก้ไขชื่อ/ไอคอนได้ทันที · ลบได้เฉพาะหมวดที่ไม่มีรายการอยู่</p>' +
+          '<div class="table-wrap"><table class="admin-table">' +
+            '<thead><tr><th>ไอคอน</th><th>ชื่อหมวดหมู่</th><th>คำอธิบาย</th><th>ใช้อยู่</th><th>จัดการ</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+          '</table></div>' +
+          catForm(kind) +
+        '</div>';
+    }
+
+    return block('items', 'หมวดหมู่สินค้า') + block('jobs', 'หมวดหมู่การจ้างงาน');
   }
 
   /* ---- users ---- */
@@ -592,6 +659,86 @@
     if (filterSelect) {
       bookingFilter = filterSelect.value;
       await refresh();
+    }
+  });
+
+  /* ---- หมวดหมู่: แก้ไข / ลบ ---- */
+
+  root.addEventListener('click', async function (event) {
+    var editBtn = event.target.closest('[data-cat-edit]');
+    if (editBtn) {
+      var editParts = editBtn.getAttribute('data-cat-edit').split(':');
+      catEdit = { kind: editParts[0], key: editParts.slice(1).join(':') };
+      paint();
+      return;
+    }
+
+    var cancelBtn = event.target.closest('[data-cat-cancel]');
+    if (cancelBtn) {
+      catEdit = null;
+      paint();
+      return;
+    }
+
+    var delBtn = event.target.closest('[data-cat-delete]');
+    if (!delBtn) return;
+
+    var delParts = delBtn.getAttribute('data-cat-delete').split(':');
+    var delKind = delParts[0];
+    var delKey = delParts.slice(1).join(':');
+    var target = (cats[delKind] || []).find(function (cat) { return cat.key === delKey; });
+    var usage = target ? Number(target.usage || 0) : 0;
+
+    var sure = await confirmDialog({
+      eyebrow: 'ลบหมวดหมู่',
+      title: 'ลบ “' + (target ? target.name : delKey) + '”?',
+      message: usage
+        ? 'หมวดนี้ยังมีรายการใช้อยู่ ' + usage + ' รายการ — ต้องย้ายหรือลบรายการนั้นก่อน ระบบจะไม่ให้ลบ'
+        : 'หมวดหมู่นี้จะหายจากหน้าเว็บถาวร (รายการที่ใช้อยู่จะไม่ถูกแตะ)',
+      confirmText: 'ลบหมวดหมู่'
+    });
+    if (!sure) return;
+
+    delBtn.disabled = true;
+    try {
+      await API.del('/admin/categories/' + delKind + '/' + encodeURIComponent(delKey));
+      toast('ลบหมวดหมู่แล้ว', 'ok');
+      if (catEdit && catEdit.key === delKey) catEdit = null;
+      await refresh();
+    } catch (err) {
+      delBtn.disabled = false;
+      toast(err.message || 'ลบไม่สำเร็จ');
+    }
+  });
+
+  root.addEventListener('submit', async function (event) {
+    var catForm = event.target.closest('[data-cat-form]');
+    if (!catForm) return;
+    event.preventDefault();
+
+    var kind = catForm.getAttribute('data-cat-form');
+    var payload = {
+      kind: kind,
+      emoji: catForm.querySelector('[name="emoji"]').value.trim(),
+      name: catForm.querySelector('[name="name"]').value.trim(),
+      sub: catForm.querySelector('[name="sub"]').value.trim()
+    };
+    var btn = catForm.querySelector('button[type="submit"]');
+    btn.disabled = true;
+
+    try {
+      if (catEdit && catEdit.kind === kind) {
+        await API.patch('/admin/categories/' + kind + '/' + encodeURIComponent(catEdit.key), payload);
+        toast('แก้ไขหมวดหมู่แล้ว', 'ok');
+        catEdit = null;
+      } else {
+        await API.post('/admin/categories', payload);
+        toast('เพิ่มหมวดหมู่แล้ว', 'ok');
+      }
+      await refresh();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message || 'บันทึกไม่สำเร็จ');
     }
   });
 

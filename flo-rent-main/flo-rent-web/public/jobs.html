@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ลงหางาน · จ้างคนทำงานรายวัน · FLO-RENT WORK</title>
+<meta name="description" content="ประกาศหาคนทำงานรายวัน กำหนดค่าจ้างต่อวันและจำนวนวัน เช่น Catering 1 วัน 400 บาท">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="page">
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="logo" href="index.html">FLO<span>-</span>RENT</a>
+      <nav class="nav">
+        <a href="browse.html">สินค้าทั้งหมด</a>
+        <a href="look-for.html">LOOK FOR</a>
+        <a href="work.html">หาคนทำงาน</a>
+        <a href="jobs.html" class="is-active">ลงหางาน</a>
+      </nav>
+      <a class="btn btn-maroon btn-sm" href="work.html">หาคนทำงาน</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>ลงหางาน</h1>
+      <p>ประกาศงานที่ต้องการคนทำ ระบุหมวดหมู่ ค่าจ้างต่อวัน และจำนวนวัน แล้วคนทำงานจะเห็นประกาศของคุณทันที</p>
+    </div>
+
+    <div class="work-layout" style="display:grid;grid-template-columns:1fr 1.05fr;gap:26px;align-items:start">
+      <form class="form-card" id="job-form">
+        <div class="form-grid">
+          <label class="field span-2"><span>ชื่องาน</span>
+            <input type="text" id="job-title" required placeholder="เช่น ต้องการ Grip ประจำกอง 2 วัน">
+          </label>
+          <label class="field"><span>หมวดหมู่การจ้างงาน</span>
+            <select id="job-cat"></select>
+          </label>
+          <label class="field"><span>ค่าจ้าง / วัน (บาท)</span>
+            <input type="number" id="job-rate" min="0" max="100000" step="50" required placeholder="400">
+          </label>
+          <label class="field"><span>จำนวนวัน</span>
+            <input type="number" id="job-days" min="1" max="90" step="1" value="1" required placeholder="1">
+          </label>
+          <label class="field"><span>วันที่เริ่มงาน</span>
+            <input type="date" id="job-start">
+          </label>
+          <label class="field span-2"><span>พื้นที่ / สถานที่ทำงาน</span>
+            <input type="text" id="job-location" placeholder="เช่น กรุงเทพฯ · บางกะปิ">
+          </label>
+          <label class="field span-2"><span>รายละเอียดงาน</span>
+            <textarea id="job-desc" placeholder="เวลาเริ่มงาน จำนวนทีมงาน สิ่งที่ต้องเตรียม หรือเงื่อนไขการจ่าย"></textarea>
+          </label>
+        </div>
+
+        <p class="notice" style="margin-top:16px">ตัวอย่างการตั้งราคา: Catering 1 วัน / 400 บาท · ระบบจะคำนวณยอดรวมทั้งงานให้อัตโนมัติ</p>
+        <p class="form-msg" id="job-msg" role="status"></p>
+
+        <div class="form-actions">
+          <button class="btn btn-maroon" type="submit">เผยแพร่ประกาศหางาน</button>
+          <a class="btn btn-outline" href="work.html">หาคนทำงาน</a>
+        </div>
+      </form>
+
+      <section>
+        <div class="section-head" style="margin-bottom:16px;padding-bottom:12px">
+          <h2 style="font-size:22px">งานที่เปิดรับ</h2>
+        </div>
+        <div class="filter-cats" id="job-cats" style="margin-bottom:16px"></div>
+        <div class="job-list" id="job-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-bottom" style="margin-top:0;border-top:0;padding-top:0">
+        <span>© 2026 FLO-RENT · HMMM! &amp; CO.</span>
+        <span>ผู้ใช้งานต้องมีอายุ 15 ปีขึ้นไป</span>
+      </div>
+    </div>
+  </footer>
+</div>
+<script src="js/data.js"></script>
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

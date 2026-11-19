@@ -18,12 +18,35 @@ const seed = require('./seed');
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = path.resolve(__dirname, '..', 'public');
-const MAX_BODY = 64 * 1024;
+/* ใหญ่พอสำหรับแนบรูปสินค้า (สูงสุด 4 รูป เป็น data URL ขนาดย่อแล้ว) */
+const MAX_BODY = 4 * 1024 * 1024;
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 700 * 1024;
 const SESSION_TTL = 14 * 24 * 60 * 60 * 1000;
 const DAY = 86400000;
 
-const CATEGORIES = seed.CATEGORIES;
-const CATEGORY_KEYS = CATEGORIES.map(function (cat) { return cat.key; });
+/* หมวดหมู่อยู่ในฐานข้อมูล (แอดมินเพิ่ม/ลบ/แก้ไขได้) — ค่าเริ่มต้นมาจาก seed */
+function ensureCategories() {
+  let changed = false;
+  if (!store().categories.length) {
+    store().categories = seed.CATEGORIES.map(function (cat) { return Object.assign({}, cat); });
+    changed = true;
+  }
+  if (!store().jobCategories.length) {
+    store().jobCategories = (seed.JOB_CATEGORIES || []).map(function (cat) { return Object.assign({}, cat); });
+    changed = true;
+  }
+  if (changed) db.persist();
+}
+
+function itemCategories() { return store().categories; }
+function jobCategories() { return store().jobCategories; }
+function categoryKeys() { return itemCategories().map(function (cat) { return cat.key; }); }
+function jobKeys() { return jobCategories().map(function (cat) { return cat.key; }); }
+
+function jobCatOf(key) {
+  return jobCategories().find(function (cat) { return cat.key === key; }) || { key: key, name: key, emoji: '🧰', sub: '' };
+}
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -128,8 +151,9 @@ function asDayList(value, label) {
 }
 
 function catOf(key) {
-  for (let i = 0; i < CATEGORIES.length; i += 1) {
-    if (CATEGORIES[i].key === key) return CATEGORIES[i];
+  const list = itemCategories();
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i].key === key) return list[i];
   }
   return { key: 'general', name: 'อุปกรณ์ทั่วไป', emoji: '📦' };
 }
@@ -257,6 +281,7 @@ function publicUser(user) {
 function publicItem(item) {
   return {
     id: item.id, cat: item.cat, title: item.title, emoji: item.emoji,
+    images: Array.isArray(item.images) && item.images.length ? item.images : (seed.ITEM_IMAGES[item.id] || []),
     price: item.price, deposit: item.deposit, owner: item.owner, ownerId: item.ownerId,
     rating: item.rating, reviews: item.reviews, location: item.location,
     tags: item.tags || [], desc: item.desc, terms: item.terms,
@@ -279,6 +304,53 @@ function publicRequest(request, viewer) {
     myOffer: !!viewer && offers.some(function (offer) { return offer.userId === viewer.id; }),
     offers: isOwner || isAdmin ? offers : []
   };
+}
+
+function publicWorker(worker) {
+  const cat = jobCatOf(worker.cat);
+  return {
+    id: worker.id, name: worker.name, cat: worker.cat,
+    catName: cat.name, catEmoji: cat.emoji,
+    rate: worker.rate, location: worker.location, bio: worker.bio,
+    rating: worker.rating, reviews: worker.reviews, avatar: worker.avatar || cat.emoji
+  };
+}
+
+function publicJob(job) {
+  const cat = jobCatOf(job.cat);
+  return {
+    id: job.id, title: job.title, cat: job.cat,
+    catName: cat.name, catEmoji: cat.emoji,
+    rate: job.rate, days: job.days, total: job.rate * job.days,
+    start: job.start || null, location: job.location, desc: job.desc,
+    name: job.name, userId: job.userId, status: job.status, createdAt: job.createdAt
+  };
+}
+
+function publicHire(hire) {
+  return {
+    code: hire.code, workerId: hire.workerId, workerName: hire.workerName,
+    workerCatName: hire.workerCatName, dayRate: hire.dayRate, days: hire.days,
+    start: hire.start || null, total: hire.total, status: hire.status,
+    createdAt: hire.createdAt
+  };
+}
+
+/* ฐานข้อมูลเดิมที่ยังไม่มีคนทำงาน/ประกาศงาน: เติมข้อมูลตั้งต้นให้หน้าเว็บไม่ว่าง */
+let workSeeded = false;
+function ensureWorkData() {
+  if (workSeeded) return;
+  workSeeded = true;
+  let changed = false;
+  if (!store().workers.length) {
+    store().workers = (seed.WORKERS || []).slice();
+    changed = true;
+  }
+  if (!store().jobs.length) {
+    store().jobs = seed.seedJobs ? seed.seedJobs() : [];
+    changed = true;
+  }
+  if (changed) db.persist();
 }
 
 function findUserByEmail(email) {
@@ -394,6 +466,23 @@ function allowAttempt(req, bucket) {
   return record.count <= 20;
 }
 
+/* รูปสินค้า: รับได้ทั้ง path ในโปรเจกต์ (img/xxx.jpg) และ data URL ที่ย่อจากหน้าเว็บแล้ว */
+const IMAGE_DATA_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/]+=*$/;
+const IMAGE_PATH_RE = /^img\/[\w.-]+\.(jpg|jpeg|png|webp)$/i;
+
+function imageList(value, label) {
+  if (value === undefined || value === null || value === '') return [];
+  if (!Array.isArray(value)) fail(400, label + ' ต้องเป็นรายการรูปภาพ');
+  if (value.length > MAX_IMAGES) fail(400, label + ' แนบได้สูงสุด ' + MAX_IMAGES + ' รูป');
+  return value.map(function (raw) {
+    const text = String(raw == null ? '' : raw).trim();
+    if (IMAGE_PATH_RE.test(text)) return text;
+    if (!IMAGE_DATA_RE.test(text)) fail(400, label + ' ต้องเป็นไฟล์ภาพ JPEG / PNG / WebP');
+    if (Buffer.byteLength(text) > MAX_IMAGE_BYTES) fail(400, label + ' มีขนาดใหญ่เกิน 700KB ต่อรูป');
+    return text;
+  });
+}
+
 function parseTags(value) {
   const list = Array.isArray(value) ? value : String(value || '').split(',');
   return list
@@ -429,6 +518,23 @@ function parseDay(value, label) {
 function startOfTodayUtc() {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+/* สร้าง key จากชื่อหมวดหมู่ (ชื่อไทยจะได้ key อัตโนมัติ) */
+function slugifyCategory(text) {
+  return String(text || '').toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+}
+
+function newHireCode() {
+  for (let i = 0; i < 20; i += 1) {
+    const code = 'WRK-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+    const exists = store().hires.some(function (hire) { return hire.code === code; });
+    if (!exists) return code;
+  }
+  fail(500, 'สร้างรหัสการจ้างไม่สำเร็จ กรุณาลูกใหม่');
 }
 
 function newBookingCode() {
@@ -489,12 +595,14 @@ async function handleApi(req, res, url) {
   const pathname = url.pathname.replace(/\/+$/, '');
   const key = method + ' ' + pathname;
 
+  ensureCategories();
+
   if (key === 'GET /api/health') {
     return sendJson(res, 200, { ok: true, name: 'FLO-RENT API', time: new Date().toISOString(), uptime: Math.round(process.uptime()) });
   }
 
   if (key === 'GET /api/categories') {
-    return sendJson(res, 200, { categories: CATEGORIES });
+    return sendJson(res, 200, { categories: itemCategories() });
   }
 
   /* ---- auth ---- */
@@ -625,7 +733,7 @@ async function handleApi(req, res, url) {
   if (key === 'POST /api/items') {
     const user = requireUser(req);
     const payload = await readBody(req);
-    const cat = asEnum(String(payload.cat || ''), 'หมวดหมู่', CATEGORY_KEYS);
+    const cat = asEnum(String(payload.cat || ''), 'หมวดหมู่', categoryKeys());
     const item = {
       id: auth.newId('usr'),
       ownerId: user.id,
@@ -633,6 +741,7 @@ async function handleApi(req, res, url) {
       cat: cat,
       title: asString(payload.title, 'ชื่อสินค้า', { min: 2, max: 120 }),
       emoji: catOf(cat).emoji,
+      images: imageList(payload.images, 'รูปสินค้า'),
       price: asInt(payload.price, 'ราคาเช่าต่อวัน', { min: 0, max: 1000000 }),
       deposit: asInt(payload.deposit === undefined ? 0 : payload.deposit, 'เงินมัดจำ', { min: 0, max: 5000000, required: false }) || 0,
       rating: 5,
@@ -672,9 +781,10 @@ async function handleApi(req, res, url) {
       const payload = await readBody(req);
       if (payload.title !== undefined) item.title = asString(payload.title, 'ชื่อสินค้า', { min: 2, max: 120 });
       if (payload.cat !== undefined) {
-        item.cat = asEnum(String(payload.cat), 'หมวดหมู่', CATEGORY_KEYS);
+        item.cat = asEnum(String(payload.cat), 'หมวดหมู่', categoryKeys());
         item.emoji = catOf(item.cat).emoji;
       }
+      if (payload.images !== undefined) item.images = imageList(payload.images, 'รูปสินค้า');
       if (payload.price !== undefined) item.price = asInt(payload.price, 'ราคาเช่าต่อวัน', { min: 0, max: 1000000 });
       if (payload.deposit !== undefined) item.deposit = asInt(payload.deposit, 'เงินมัดจำ', { min: 0, max: 5000000, required: false }) || 0;
       if (payload.location !== undefined) item.location = asString(payload.location, 'พื้นที่', { max: 80, required: false }) || 'ไม่ระบุพื้นที่';
@@ -825,7 +935,7 @@ async function handleApi(req, res, url) {
     const request = {
       id: auth.newId('rq'),
       want: asString(payload.want, 'สิ่งที่ต้องการเช่า', { min: 2, max: 160 }),
-      cat: asEnum(String(payload.cat || 'all'), 'หมวดหมู่', ['all'].concat(CATEGORY_KEYS)),
+      cat: asEnum(String(payload.cat || 'all'), 'หมวดหมู่', ['all'].concat(categoryKeys())),
       budget: asInt(payload.budget === undefined ? 0 : payload.budget, 'งบต่อวัน', { min: 0, max: 1000000, required: false }) || 0,
       when: asString(payload.when, 'ช่วงวันที่', { max: 60, required: false }) || 'ไม่ระบุ',
       name: asString(payload.name, 'ชื่อผู้ประกาศ', { max: 60, required: false }) || user.name,
@@ -870,6 +980,135 @@ async function handleApi(req, res, url) {
     target.offers.push(offer);
     db.persist();
     return sendJson(res, 201, { offer: offer, request: publicRequest(target, user) });
+  }
+
+  /* ---- งาน / จ้างคนทำงาน ( freelance ) ---- */
+
+  if (key === 'GET /api/work-categories') {
+    return sendJson(res, 200, { categories: jobCategories() });
+  }
+
+  if (key === 'GET /api/workers') {
+    ensureWorkData();
+    const cat = String(url.searchParams.get('cat') || 'all');
+    const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+    const list = store().workers.filter(function (worker) {
+      if (cat !== 'all' && worker.cat !== cat) return false;
+      if (!q) return true;
+      const haystack = [worker.name, worker.bio, worker.location, jobCatOf(worker.cat).name].join(' ').toLowerCase();
+      return haystack.indexOf(q) !== -1;
+    });
+    return sendJson(res, 200, { workers: list.map(publicWorker), count: list.length });
+  }
+
+  if (key === 'GET /api/jobs') {
+    ensureWorkData();
+    const cat = String(url.searchParams.get('cat') || 'all');
+    const mine = url.searchParams.get('mine') === '1';
+    const viewer = mine ? requireUser(req) : currentUser(req);
+    const list = store().jobs.filter(function (job) {
+      if (mine && job.userId !== viewer.id) return false;
+      return cat === 'all' || job.cat === cat;
+    }).slice().sort(function (a, b) {
+      return String(b.createdAt).localeCompare(String(a.createdAt));
+    });
+    return sendJson(res, 200, { jobs: list.map(publicJob), count: list.length });
+  }
+
+  if (key === 'POST /api/jobs') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    const job = {
+      id: auth.newId('job'),
+      title: asString(payload.title, 'ชื่องาน', { min: 2, max: 120 }),
+      cat: asEnum(String(payload.cat || ''), 'หมวดหมู่การจ้างงาน', jobKeys()),
+      rate: asInt(payload.rate, 'ค่าจ้างต่อวัน', { min: 0, max: 100000 }),
+      days: asInt(payload.days === undefined || payload.days === '' ? 1 : payload.days, 'จำนวนวัน', { min: 1, max: 90 }) || 1,
+      start: payload.start ? asDay(payload.start, 'วันที่เริ่มงาน') : null,
+      location: asString(payload.location, 'พื้นที่ทำงาน', { max: 80, required: false }) || 'ไม่ระบุพื้นที่',
+      desc: asString(payload.desc, 'รายละเอียดงาน', { max: 1200, required: false }) || 'ยังไม่มีรายละเอียด',
+      name: user.name,
+      userId: user.id,
+      status: 'open',
+      createdAt: new Date().toISOString()
+    };
+    store().jobs.unshift(job);
+    logEvent('job.create', 'ประกาศหางาน: ' + job.title + ' (' + job.rate + ' บาท/วัน)', user, job.id);
+    db.persist();
+    return sendJson(res, 201, { job: publicJob(job) });
+  }
+
+  if (key === 'GET /api/hires') {
+    const user = requireUser(req);
+    const list = store().hires.filter(function (hire) { return hire.userId === user.id; });
+    return sendJson(res, 200, { hires: list.map(publicHire), wallet: walletOf(user) });
+  }
+
+  if (key === 'POST /api/hires') {
+    const user = requireUser(req);
+    const payload = await readBody(req);
+    const worker = store().workers.find(function (entry) { return entry.id === String(payload.workerId || ''); });
+    if (!worker) fail(404, 'ไม่พบคนทำงานคนนี้');
+    if (worker.userId && worker.userId === user.id) fail(400, 'จ้างตัวเองไม่ได้');
+
+    const days = asInt(payload.days === undefined || payload.days === '' ? 1 : payload.days, 'จำนวนวัน', { min: 1, max: 30 }) || 1;
+    const start = payload.start ? asDay(payload.start, 'วันที่เริ่มงาน') : null;
+    const total = worker.rate * days;
+
+    ensureWallet(user);
+    const credit = creditOf(user);
+    if (credit < CREDIT_MIN_BOOKING) {
+      fail(403, 'เครดิตของคุณ ' + credit + '/100 ต่ำกว่าเกณฑ์การจ้าง (' + CREDIT_MIN_BOOKING + ')');
+    }
+    if (walletOf(user) < total) {
+      fail(402, 'ยอดใน FLO-RENT Wallet ไม่พอ: ต้องจ่าย ' + total + ' FLO แต่มี ' + walletOf(user) + ' FLO — เติมเงินที่หน้ากระเป๋าเงินก่อน');
+    }
+
+    user.wallet = walletOf(user) - total;
+    const hire = {
+      code: newHireCode(),
+      workerId: worker.id,
+      workerName: worker.name,
+      workerCatName: jobCatOf(worker.cat).name,
+      dayRate: worker.rate,
+      days: days,
+      start: start,
+      total: total,
+      status: 'pending',
+      userId: user.id,
+      userName: user.name,
+      createdAt: new Date().toISOString()
+    };
+    store().hires.unshift(hire);
+    pushLedger(user, {
+      type: 'hire',
+      amount: -total,
+      note: 'จ้าง ' + worker.name + ' ' + days + ' วัน',
+      ref: hire.code
+    });
+    logEvent('hire.create', 'จ้าง ' + worker.name + ' ' + days + ' วัน · ' + total + ' FLO', user, hire.code);
+    db.persist();
+    return sendJson(res, 201, { hire: publicHire(hire), wallet: walletOf(user) });
+  }
+
+  const hireMatch = /^\/api\/hires\/([\w-]+)$/.exec(pathname);
+  if (hireMatch && method === 'PATCH') {
+    const user = requireUser(req);
+    const hire = store().hires.find(function (entry) { return entry.code === hireMatch[1]; });
+    if (!hire) fail(404, 'ไม่พบรายการจ้างนี้');
+    if (hire.userId !== user.id && user.role !== 'admin') fail(403, 'จัดการได้เฉพาะรายการจ้างของคุณเอง');
+
+    const payload = await readBody(req);
+    asEnum(String(payload.action || ''), 'การกระทำ', ['cancel']);
+    if (hire.status !== 'pending') fail(409, 'ยกเลิกได้เฉพาะรายการที่ยังไม่เริ่มงาน');
+
+    hire.status = 'cancelled';
+    hire.cancelledAt = new Date().toISOString();
+    user.wallet = walletOf(user) + hire.total;
+    pushLedger(user, { type: 'refund', amount: hire.total, note: 'คืนเงินค่าจ้าง · ' + hire.workerName, ref: hire.code });
+    logEvent('hire.cancel', 'ยกเลิกการจ้าง ' + hire.workerName + ' · คืน ' + hire.total + ' FLO', user, hire.code);
+    db.persist();
+    return sendJson(res, 200, { hire: publicHire(hire), wallet: walletOf(user) });
   }
 
   /* ---- FLO-RENT wallet ---- */
@@ -943,6 +1182,101 @@ async function handleApi(req, res, url) {
   if (key === 'GET /api/admin/logs') {
     requireAdmin(req);
     return sendJson(res, 200, { logs: store().logs.slice(0, 200) });
+  }
+
+  /* ---- admin: หมวดหมู่ (สินค้า / การจ้างงาน) ---- */
+
+  if (key === 'GET /api/admin/categories') {
+    requireAdmin(req);
+    return sendJson(res, 200, {
+      items: itemCategories().map(function (cat) {
+        return Object.assign({}, cat, {
+          usage: store().items.filter(function (item) { return item.cat === cat.key; }).length
+        });
+      }),
+      jobs: jobCategories().map(function (cat) {
+        return Object.assign({}, cat, {
+          usage: store().jobs.filter(function (job) { return job.cat === cat.key; }).length
+        });
+      })
+    });
+  }
+
+  if (key === 'POST /api/admin/categories') {
+    const admin = requireAdmin(req);
+    const payload = await readBody(req);
+    const kind = asEnum(String(payload.kind || 'items'), 'ประเภทหมวดหมู่', ['items', 'jobs']);
+    const list = kind === 'jobs' ? jobCategories() : itemCategories();
+    const name = asString(payload.name, 'ชื่อหมวดหมู่', { min: 2, max: 40 });
+    if (list.some(function (cat) { return cat.name.toLowerCase() === name.toLowerCase(); })) {
+      fail(409, 'มีหมวดหมู่นี้อยู่แล้ว');
+    }
+
+    const emoji = asString(payload.emoji, 'ไอคอน', { max: 4, required: false }) || (kind === 'jobs' ? '🧰' : '📦');
+    const sub = asString(payload.sub, 'คำอธิบาย', { max: 120, required: false });
+
+    const base = slugifyCategory(name) || auth.newId('cat');
+    let categoryKey = base;
+    let counter = 1;
+    while (list.some(function (cat) { return cat.key === categoryKey; })) {
+      counter += 1;
+      categoryKey = base + '-' + counter;
+    }
+
+    const category = { key: categoryKey, name: name, emoji: emoji, sub: sub };
+    if (kind === 'items') category.num = String(list.length + 1).padStart(2, '0');
+    list.push(category);
+    logEvent('category.create', 'เพิ่มหมวดหมู่' + (kind === 'jobs' ? 'การจ้างงาน' : 'สินค้า') + ': ' + name, admin, categoryKey);
+    db.persist();
+    return sendJson(res, 201, { kind: kind, category: category });
+  }
+
+  const adminCatMatch = /^\/api\/admin\/categories\/(items|jobs)\/([\w-]+)$/.exec(pathname);
+  if (adminCatMatch && method === 'PATCH') {
+    const admin = requireAdmin(req);
+    const kind = adminCatMatch[1];
+    const list = kind === 'jobs' ? jobCategories() : itemCategories();
+    const category = list.find(function (cat) { return cat.key === adminCatMatch[2]; });
+    if (!category) fail(404, 'ไม่พบหมวดหมู่นี้');
+
+    const payload = await readBody(req);
+    if (payload.name !== undefined) {
+      const name = asString(payload.name, 'ชื่อหมวดหมู่', { min: 2, max: 40 });
+      const duplicate = list.some(function (cat) {
+        return cat.key !== category.key && cat.name.toLowerCase() === name.toLowerCase();
+      });
+      if (duplicate) fail(409, 'มีหมวดหมู่นี้อยู่แล้ว');
+      category.name = name;
+    }
+    if (payload.emoji !== undefined) {
+      category.emoji = asString(payload.emoji, 'ไอคอน', { max: 4, required: false }) || category.emoji;
+    }
+    if (payload.sub !== undefined) category.sub = asString(payload.sub, 'คำอธิบาย', { max: 120, required: false });
+
+    logEvent('category.update', 'แก้ไขหมวดหมู่: ' + category.name, admin, category.key);
+    db.persist();
+    return sendJson(res, 200, { kind: kind, category: category });
+  }
+
+  if (adminCatMatch && method === 'DELETE') {
+    const admin = requireAdmin(req);
+    const kind = adminCatMatch[1];
+    const list = kind === 'jobs' ? jobCategories() : itemCategories();
+    const category = list.find(function (cat) { return cat.key === adminCatMatch[2]; });
+    if (!category) fail(404, 'ไม่พบหมวดหมู่นี้');
+
+    const usage = kind === 'jobs'
+      ? store().jobs.filter(function (job) { return job.cat === category.key; }).length
+      : store().items.filter(function (item) { return item.cat === category.key; }).length;
+    if (usage > 0) {
+      fail(409, 'ลบไม่ได้: ยังมี' + (kind === 'jobs' ? 'งาน' : 'สินค้า') + ' ' + usage + ' รายการอยู่ในหมวดนี้ — ย้ายหรือลบรายการนั้นก่อน');
+    }
+
+    const next = list.filter(function (cat) { return cat.key !== category.key; });
+    if (kind === 'jobs') store().jobCategories = next; else store().categories = next;
+    logEvent('category.delete', 'ลบหมวดหมู่: ' + category.name, admin, category.key);
+    db.persist();
+    return sendJson(res, 200, { ok: true });
   }
 
   if (key === 'GET /api/admin/stats') {

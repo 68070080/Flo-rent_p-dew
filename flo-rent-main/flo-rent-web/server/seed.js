@@ -7,13 +7,113 @@ const { hashPassword } = require('./auth');
 const DAY = 86400000;
 
 const CATEGORIES = [
-  { key: 'crew', num: '01', name: 'ของใช้คอนออกกอง', emoji: '🎬', sub: 'กล้อง · ขาตั้งกล้อง · อุปกรณ์แสง-เสียง' },
+  { key: 'crew', num: '01', name: 'ของใช้คนออกกอง', emoji: '🎬', sub: 'กล้อง · ขาตั้งกล้อง · อุปกรณ์แสง-เสียง' },
   { key: 'fashion', num: '02', name: 'แฟชั่น', emoji: '👗', sub: 'เสื้อผ้า · อุปกรณ์แต่งหน้า · ชุดเครื่องสำอาง' },
   { key: 'sport', num: '03', name: 'อุปกรณ์กีฬา', emoji: '🏀', sub: 'บาส · ฟุตบอล · จักรยาน' },
   { key: 'party', num: '04', name: 'งานบันเทิง', emoji: '🪩', sub: 'แท่งไฟ · เครื่องเสียง · เวที' },
   { key: 'gadget', num: '05', name: 'อิเล็กทรอนิกส์', emoji: '📱', sub: 'โทรศัพท์ · ลำโพง · โปรเจกเตอร์' },
   { key: 'general', num: '06', name: 'อุปกรณ์ทั่วไป', emoji: '🪑', sub: 'โต๊ะ · เก้าอี้ · ของใช้ในบ้าน' }
 ];
+
+/* หมวดหมู่การจ้างงาน — งานฟรีแลนซ์สายโปรดักชัน/ครีเอทีฟ */
+const JOB_CATEGORIES = [
+  { key: 'producer',        name: 'Producer',                emoji: '🎬', sub: 'ดูแลงานผลิตทั้งงาน' },
+  { key: 'ad1',             name: 'Asst. Director 1',        emoji: '🎯', sub: 'ผู้ช่วยผู้กำกับคนที่ 1' },
+  { key: 'ad2',             name: 'Asst. Director 2',        emoji: '🧭', sub: 'ผู้ช่วยผู้กำกับคนที่ 2' },
+  { key: 'catering',        name: 'Catering',                emoji: '🍱', sub: 'อาหารและของว่างในกอง' },
+  { key: 'casting',         name: 'Casting Director',        emoji: '🎭', sub: 'คัดเลือกนักแสดง' },
+  { key: 'acting',          name: 'Acting',                  emoji: '🎤', sub: 'นักแสดง / ผู้แสดง' },
+  { key: 'coach',           name: 'Coach',                   emoji: '🧑‍🏫', sub: 'โค้ชการแสดง/การเคลื่อนไหว' },
+  { key: 'grip',            name: 'Grip',                    emoji: '🛠️', sub: 'อุปกรณ์ไฟและขาตั้ง' },
+  { key: 'dog-walker',      name: 'คนจูงหมา',                 emoji: '🐕', sub: 'พาน้องหมาเดิน/ดูแล' },
+  { key: 'illustrator',     name: 'คนวาดรูป',                emoji: '🎨', sub: 'ภาพประกอบ / สตอรีบอร์ด' },
+  { key: 'report-designer', name: 'คนทำรูปเล่มรายงาน',        emoji: '📘', sub: 'จัดหน้าหนังสือ/รายงาน' },
+  { key: 'web-dev',         name: 'คนเขียนเว็บไซต์',          emoji: '💻', sub: 'เว็บ/แลนดิ้งพจ' }
+];
+
+/* คนทำงานที่เปิดรับจ้าง (ค่าแรงต่อวัน) — userId = null คือบัญชีตัวอย่าง */
+const WORKERS = [
+  {
+    id: 'wk-mint', name: 'พี่มิ้นท์ สตูดิโออารีย์', cat: 'producer', rate: 3500,
+    location: 'กรุงเทพฯ · อารีย์', rating: 4.9, reviews: 27, avatar: '🎬', userId: null,
+    bio: 'ดูงานโปรดักชันโฆษณาและมิวสิกวิดีโอ 10 ปี ดูแลทีม 5–15 คน พร้อมตารางถ่ายและงบประมาณ'
+  },
+  {
+    id: 'wk-jay', name: 'น้องเจ ฟรีแลนซ์กองถ่าย', cat: 'ad1', rate: 1800,
+    location: 'กรุงเทพฯ · บางนา', rating: 4.8, reviews: 19, avatar: '🎯', userId: null,
+    bio: 'ผู้ช่วยผู้กำกับคนที่ 1 ดูแลคิวถ่ายและเรียกซีน ถนัดงานถ่ายคอนเทนต์ 1–2 วัน'
+  },
+  {
+    id: 'wk-ploy', name: 'น้องพลอย ทีมเอเจนซี', cat: 'ad2', rate: 1500,
+    location: 'กรุงเทพฯ · รัชดา', rating: 4.7, reviews: 14, avatar: '🧭', userId: null,
+    bio: 'AD2 ดูแลนักแสดงและสคริปต์หน้างาน มีประสบการณ์งานอีเวนต์และงานถ่ายสินค้า'
+  },
+  {
+    id: 'wk-noi', name: 'พี่หนดย ครัวกองถ่าย', cat: 'catering', rate: 400,
+    location: 'กรุงเทพฯ · ลาดพร้าว', rating: 4.9, reviews: 41, avatar: '🍱', userId: null,
+    bio: 'เสิร์ฟอาหารกองถ่าย 1 วัน/400 บาทต่อคน รวมข้าวกล่อง น้ำ และของว่าง มีรถส่งเอง'
+  },
+  {
+    id: 'wk-nan', name: 'พี่แนน แคสติ้งเฮาส์', cat: 'casting', rate: 2500,
+    location: 'กรุงเทพฯ · สีลม', rating: 4.8, reviews: 22, avatar: '🎭', userId: null,
+    bio: 'คัดนักแสดงโฆษณาและซีรีส์ มีฐานนักแสดงกว่า 300 คน ส่งโปรไฟล์ภายใน 24 ชม.'
+  },
+  {
+    id: 'wk-win', name: 'น้องวิน นักแสดง', cat: 'acting', rate: 2000,
+    location: 'กรุงเทพฯ · จตุจักร', rating: 4.6, reviews: 16, avatar: '🎤', userId: null,
+    bio: 'นักแสดงรับบทนำ/สมทบ งานโฆษณา ซีรีส์ และ MV ซ้อมบทไว ตรงเวลา'
+  },
+  {
+    id: 'wk-kong', name: 'พี่ก้อง Acting Coach', cat: 'coach', rate: 1200,
+    location: 'กรุงเทพฯ · ทองหล่อ', rating: 4.9, reviews: 12, avatar: '🧑‍🏫', userId: null,
+    bio: 'โค้ชการแสดงและ workshop กลุ่มเล็ก เหมาะกับทีมที่ต้องการซ้อมก่อนถ่าย'
+  },
+  {
+    id: 'wk-boy', name: 'พี่บอย กริปกอง', cat: 'grip', rate: 900,
+    location: 'กรุงเทพฯ · บางกะปิ', rating: 4.7, reviews: 30, avatar: '🛠️', userId: null,
+    bio: 'กริป/ไฟ ประสบการณ์ 6 ปี รับผิดชอบขาตั้ง ไฟ และความปลอดภัยบนกอง'
+  },
+  {
+    id: 'wk-khao', name: 'น้องข้าวหอม จูงหมา', cat: 'dog-walker', rate: 400,
+    location: 'กรุงเทพฯ · อ่อนนุช', rating: 5.0, reviews: 58, avatar: '🐕', userId: null,
+    bio: 'พาน้องหมาเดินและดูแลระหว่างวัน 1 วัน/400 บาท ส่งรูปอัปเดตทุกชั่วโมง'
+  },
+  {
+    id: 'wk-fah', name: 'น้องฟ้า นักวาดภาพประกอบ', cat: 'illustrator', rate: 800,
+    location: 'เชียงใหม่ · นิมมาน', rating: 4.9, reviews: 24, avatar: '🎨', userId: null,
+    bio: 'วาดภาพประกอบและสตอรีบอร์ด แนวการ์ตูน/มินิมอล ส่งไฟล์ต้นฉบับความละเอียดสูง'
+  },
+  {
+    id: 'wk-oi', name: 'พี่อ้อย จัดรูปเล่ม', cat: 'report-designer', rate: 1200,
+    location: 'กรุงเทพฯ · พระโขนง', rating: 4.8, reviews: 18, avatar: '📘', userId: null,
+    bio: 'จัดหน้าหนังสือและรูปเล่มรายงาน ปรับแต่งเลย์เอาต์ให้พร้อมพิมพ์ พร้อมไฟล์ PDF'
+  },
+  {
+    id: 'wk-tong', name: 'น้องโต้ง ดีเวลลอปเปอร์', cat: 'web-dev', rate: 2500,
+    location: 'ขอนแก่น · เมือง', rating: 4.8, reviews: 21, avatar: '💻', userId: null,
+    bio: 'เขียนเว็บไซต์/แลนดิ้งพจ HTML–CSS–JS และปรับแก้หน้าบ้านให้รองรับมือถือ'
+  }
+];
+
+/* รูปสินค้าตั้งต้น — ไฟล์จริงอยู่ใน public/img/ (คัดจากโฟลเดอร์ img/ ของโปรเจกต์) */
+const ITEM_IMAGES = {
+  'cam-sony-a7iii': ['img/cam-sony-a7iii.jpg'],
+  'tripod-manfrotto': ['img/tripod-manfrotto.jpg'],
+  'light-studio-kit': ['img/light-studio-kit.jpg'],
+  'mic-rode-wireless': ['img/mic-rode-wireless.jpg'],
+  'dress-satin-red': ['img/dress-satin-red.jpg'],
+  'bag-chanel-classic': ['img/bag-chanel-classic.jpg'],
+  'makeup-kit-mac': ['img/makeup-kit-mac.jpg'],
+  'bike-trek-domane': ['img/bike-trek-domane.jpg'],
+  'basketball-spalding': ['img/basketball-spalding.jpg'],
+  'lightstick-pack': ['img/lightstick-pack.jpg'],
+  'speaker-jbl-partybox': ['img/speaker-jbl-partybox.jpg'],
+  'iphone-14-pro': ['img/iphone-14-pro.jpg'],
+  'projector-epson': ['img/projector-epson.jpg'],
+  'table-folding-180': ['img/table-folding-180.jpg'],
+  'chair-ergonomic': ['img/chair-ergonomic.jpg'],
+  'tent-4p': ['img/tent-4p.png']
+};
 
 const ITEMS = [
   {
@@ -130,12 +230,41 @@ const ITEMS = [
   }
 ];
 
+/* ผูกไฟล์รูปเข้ากับสินค้าแต่ละชิ้น (ใช้ทั้งตอน seed และตอน migrate ข้อมูลเดิม) */
+ITEMS.forEach(function (item) {
+  if (!Array.isArray(item.images)) item.images = ITEM_IMAGES[item.id] || [];
+});
+
 function iso(offsetMs) {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
 function dayString(offsetDays) {
   return new Date(Date.now() + offsetDays * DAY).toISOString().slice(0, 10);
+}
+
+/* ประกาศหางานตั้งต้น — แยกเป็นฟังก์ชันเพื่อใช้ migrate ฐานข้อมูลเดิมได้ */
+function seedJobs() {
+  return [
+    {
+      id: 'job-1', title: 'ต้องการ Grip ประจำกอง 2 วัน (ถ่ายโฆษณา)', cat: 'grip', rate: 900, days: 2,
+      start: dayString(3), location: 'กรุงเทพฯ · บางกะปิ',
+      desc: 'ต้องยกไฟและขาตั้งได้ มีประสบการณ์บนกองถ่าย เริ่ม 08:00 น. มีรถรับส่งจาก MRTA',
+      name: 'ทีมโปรดักชัน บี', userId: 'u-owner', status: 'open', createdAt: iso(-2 * DAY)
+    },
+    {
+      id: 'job-2', title: 'หา Catering งานถ่าย MV 1 วัน', cat: 'catering', rate: 400, days: 1,
+      start: dayString(5), location: 'กรุงเทพฯ · ลาดพร้าว',
+      desc: 'ทีมถ่าย 12 คน ต้องการข้าวกลางวัน น้ำ และของว่างบ่าย (1 วัน/400 บาทต่อคน)',
+      name: 'เดโม่ ผู้เช่ามือใหม่', userId: 'u-demo', status: 'open', createdAt: iso(-1 * DAY)
+    },
+    {
+      id: 'job-3', title: 'รับคนเขียนเว็บไซต์ แก้หน้า landing page', cat: 'web-dev', rate: 2500, days: 1,
+      start: dayString(7), location: 'ทำงานจากที่ไหนก็ได้',
+      desc: 'แก้หน้า landing page ที่มีอยู่ 3 ส่วน เพิ่มฟอร์มติดต่อ และทำ responsive ให้มือถือ',
+      name: 'ทีมโปรดักชัน บี', userId: 'u-owner', status: 'open', createdAt: iso(-4 * DAY)
+    }
+  ];
 }
 
 function build() {
@@ -247,6 +376,8 @@ function build() {
     }
   ];
 
+  const jobs = seedJobs();
+
   const logs = [
     {
       id: 'lg-seed-1', action: 'wallet.hold',
@@ -267,6 +398,9 @@ function build() {
     items: items,
     bookings: bookings,
     requests: requests,
+    jobs: jobs,
+    workers: WORKERS,
+    hires: [],
     ledger: ledger,
     holds: holds,
     logs: logs,
@@ -274,4 +408,4 @@ function build() {
   };
 }
 
-module.exports = { build, CATEGORIES };
+module.exports = { build, CATEGORIES, ITEM_IMAGES, JOB_CATEGORIES, WORKERS, seedJobs };

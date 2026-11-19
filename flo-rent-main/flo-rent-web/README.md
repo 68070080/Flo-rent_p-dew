@@ -44,6 +44,7 @@ PORT=8080 HOST=0.0.0.0 npm start
 - สมัครสมาชิก/เข้าสู่ระบบ (บังคับอายุ 15 ปีขึ้นไป), โปรไฟล์, แก้ไขข้อมูล, เลือกอวตาร
 - ประวัติการจอง: กรองตามสถานะ, ยกเลิกการจองที่รอยืนยัน, ยืนยันคืนสินค้า
 - ลงประกาศให้เช่า (ผูกกับบัญชี), ประกาศของฉัน, ประกาศตามหา (LOOK FOR)
+- **หาคนทำงาน / ลงหางาน**: จ้างฟรีแลนซ์รายวัน (Producer, AD1, AD2, Catering, Casting, Acting, Coach, Grip, คนจูงหมา, คนวาดรูป, คนทำรูปเล่ม, คนเขียนเว็บไซต์) — จ่ายผ่าน Wallet และยกเลิกได้ก่อนเริ่มงาน
 - **FLO-RENT wallet**: เติมเงิน, จ่ายค่าเช่า, กันเงินมัดจำไว้จนกว่าจะคืนของ, รายการเดินบัญชี
 - **เครดิตผู้ใช้** (0–100): +2 เมื่อคืนของครบ, −4 เมื่อยกเลิก, ต่ำกว่า 40 จองใหม่ไม่ได้
 
@@ -98,10 +99,21 @@ flo-rent-web/
 | POST | `/api/bookings` | จองสินค้า (`itemId`, `start`, `end`) |
 | PATCH | `/api/bookings/:code` | `{action:"cancel"}` หรือ `{action:"return"}` |
 | GET | `/api/requests` | คำขอตามหา |
+| GET | `/api/work-categories` | หมวดหมู่การจ้างงาน (Producer, Grip, Catering, …) |
+| GET | `/api/workers?cat&q` | คนทำงานที่เปิดรับจ้าง (เรตค่าจ้าง/วัน) |
+| GET | `/api/jobs?cat&mine` | งานที่เปิดรับ / งานที่ฉันประกาศ |
+| POST | `/api/jobs` | ลงประกาศหางาน (`title`, `cat`, `rate`, `days`, `start`, `location`, `desc`) |
+| GET | `/api/hires` | ประวัติการจ้างของฉัน |
+| POST | `/api/hires` | จ้างคนทำงาน (`workerId`, `days`) — หักจาก Wallet |
+| PATCH | `/api/hires/:code` | ยกเลิกการจ้าง (`action=cancel`) — คืนเงินเต็มจำนวน |
 | POST | `/api/requests` | ประกาศตามหา |
 | POST | `/api/requests/:id/offers` | เสนอประกาศของตัวเองให้คำขอ (`itemId`, `note`) |
 | GET | `/api/wallet` | ยอดเงิน + เครดิต + รายการเดินบัญชีของฉัน |
 | POST | `/api/wallet/topup` | เติมเงินเข้ากระเป๋า (`amount` 1–50000) |
+| GET | `/api/admin/categories` | หมวดหมู่สินค้า + หมวดหมู่การจ้างงาน พร้อมจำนวนที่ใช้อยู่ (แอดมิน) |
+| POST | `/api/admin/categories` | เพิ่มหมวดหมู่ (`kind=items\|jobs`, `name`, `emoji`, `sub`) |
+| PATCH | `/api/admin/categories/:kind/:key` | แก้ไขชื่อ/ไอคอน/คำอธิบายหมวดหมู่ |
+| DELETE | `/api/admin/categories/:kind/:key` | ลบหมวดหมู่ (ลบไม่ได้ถ้ายังมีรายการใช้อยู่) |
 | GET | `/api/admin/stats` | สถิติภาพรวม (แอดมิน) |
 | GET | `/api/admin/wallet` | ยอดรวมกระเป๋า เงินที่กันไว้ และธุรกรรมทั้งหมด (แอดมิน) |
 | GET | `/api/admin/logs` | ล็อกระบบ: เติมเงิน กันเงิน คืนเงิน ค่าเช่า และเครดิต (แอดมิน) |

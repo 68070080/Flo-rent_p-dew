@@ -27,8 +27,20 @@
     hold: 'กันเงินจอง',
     refund: 'คืนเงิน',
     'deposit-release': 'คืนมัดจำ',
-    payout: 'รับค่าเช่า'
+    payout: 'รับค่าเช่า',
+    hire: 'จ่ายค่าจ้าง'
   };
+
+  /* หมวดหมู่จริงมาจาก API (แอดมินแก้ไขได้) — data.js เป็นค่าเริ่มต้นถ้าโหลดไม่สำเร็จ */
+  async function loadCategories() {
+    try {
+      var data = await API.get('/categories');
+      if (data.categories && data.categories.length) {
+        CATS = data.categories;
+        window.FLO_CATEGORIES = data.categories;
+      }
+    } catch (err) { /* ใช้ค่าเริ่มต้น */ }
+  }
 
   function catOf(key) {
     for (var i = 0; i < CATS.length; i += 1) {
@@ -170,12 +182,36 @@
       '</div>';
   }
 
+  /* ---------- รูปสินค้า ---------- */
+
+  function itemImages(item) {
+    var list = item && Array.isArray(item.images) ? item.images : [];
+    return list.filter(function (src) { return typeof src === 'string' && src; });
+  }
+
+  function thumbInner(item, extraClass) {
+    var images = itemImages(item);
+    if (images.length) {
+      return '<img class="thumb-img ' + esc(extraClass || '') + '" src="' + esc(images[0]) + '" alt="' + esc(item.title) + '" loading="lazy">';
+    }
+    return '<span class="thumb-emoji" aria-hidden="true">' + esc(item.emoji) + '</span>';
+  }
+
+  function thumbsStrip(item) {
+    var images = itemImages(item);
+    if (images.length < 2) return '';
+    return '<div class="detail-gallery" id="detail-gallery">' + images.map(function (src, index) {
+      return '<button type="button" class="gallery-thumb' + (index === 0 ? ' is-active' : '') + '" data-src="' + esc(src) + '">' +
+        '<img src="' + esc(src) + '" alt="รูปที่ ' + (index + 1) + '"></button>';
+    }).join('') + '</div>';
+  }
+
   function itemCard(item) {
     var cat = catOf(item.cat);
     return '' +
       '<a class="item-card" href="item.html?id=' + encodeURIComponent(item.id) + '">' +
         '<div class="thumb thumb-' + esc(item.cat) + '">' +
-          '<span class="thumb-emoji" aria-hidden="true">' + esc(item.emoji) + '</span>' +
+          thumbInner(item) +
           '<span class="chip chip-light">' + esc(cat.name) + '</span>' +
           (item.status === 'hidden' ? '<span class="chip">ซ่อนอยู่</span>' : '') +
         '</div>' +
@@ -533,6 +569,18 @@
       sessionUser = null;
     }
 
+    /* ลิงก์งานแสดงให้ทุกคนเห็น (ไม่ต้องเข้าสู่ระบบ) และไม่เพิ่มซ้ำถ้าหน้านั้นมีอยู่แล้ว */
+    var headerNav = header.querySelector('.nav');
+    if (headerNav) {
+      [['หาคนทำงาน', 'work.html'], ['ลงหางาน', 'jobs.html']].forEach(function (item) {
+        if (headerNav.querySelector('a[href="' + item[1] + '"]')) return;
+        var link = document.createElement('a');
+        link.href = item[1];
+        link.textContent = item[0];
+        headerNav.appendChild(link);
+      });
+    }
+
     if (sessionUser) {
       box.innerHTML = '' +
         '<a class="account-link" href="wallet.html">กระเป๋าเงิน ' + flo(sessionUser.wallet) + '</a>' +
@@ -771,8 +819,9 @@
       '<div class="detail">' +
         '<div class="detail-main">' +
           '<div class="thumb thumb-lg thumb-' + esc(item.cat) + '">' +
-            '<span class="thumb-emoji" aria-hidden="true">' + esc(item.emoji) + '</span>' +
+            thumbInner(item, 'detail-hero') +
           '</div>' +
+          thumbsStrip(item) +
           '<h1 class="detail-title">' + esc(item.title) + '</h1>' +
           '<p class="item-meta">' + esc(item.owner) + ' · <span class="stars">★ ' +
             Number(item.rating || 0).toFixed(1) + '</span> <span class="muted">(' + Number(item.reviews || 0) +
@@ -800,6 +849,19 @@
         '</div>' +
         '<aside class="booking-card" id="booking-card">' + bookingPanel + '</aside>' +
       '</div>';
+
+    var galleryEl = $('detail-gallery');
+    if (galleryEl) {
+      galleryEl.addEventListener('click', function (event) {
+        var btn = event.target.closest('[data-src]');
+        if (!btn) return;
+        var hero = document.querySelector('.thumb-lg .thumb-img');
+        if (hero) hero.src = btn.getAttribute('data-src');
+        Array.prototype.forEach.call(galleryEl.querySelectorAll('[data-src]'), function (node) {
+          node.classList.toggle('is-active', node === btn);
+        });
+      });
+    }
 
     if (hasPin) {
       createPinMap($('detail-map'), { lat: item.lat, lng: item.lng, editable: false });
@@ -1007,6 +1069,71 @@
       });
     }
 
+    /* แนบรูปสินค้า: ย่อขนาดในเบราว์เซอร์แล้วส่งเป็น data URL (สูงสุด 4 รูป) */
+    var imageInput = $('post-images');
+    var previewEl = $('post-images-preview');
+    var photos = [];
+
+    function paintPreviews() {
+      if (previewEl) {
+        previewEl.innerHTML = photos.map(function (src, index) {
+          return '<figure class="image-item">' +
+            '<img src="' + esc(src) + '" alt="รูปที่ ' + (index + 1) + '">' +
+            '<button type="button" class="image-remove" data-remove="' + index + '" aria-label="ลบรูปนี้">×</button>' +
+          '</figure>';
+        }).join('');
+      }
+      if (imageInput) imageInput.disabled = photos.length >= 4;
+    }
+
+    function readPhoto(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () {
+          var image = new Image();
+          image.onload = function () {
+            var max = 1200;
+            var scale = Math.min(1, max / Math.max(image.width, image.height));
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.round(image.width * scale);
+            canvas.height = Math.round(image.height * scale);
+            canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/jpeg', 0.8));
+          };
+          image.onerror = function () { reject(new Error('อ่านรูปไม่สำเร็จ')); };
+          image.src = String(reader.result);
+        };
+        reader.onerror = function () { reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    if (imageInput) {
+      imageInput.addEventListener('change', async function () {
+        var files = Array.prototype.slice.call(imageInput.files || []);
+        imageInput.value = '';
+        for (var i = 0; i < files.length; i += 1) {
+          if (photos.length >= 4) { toast('แนบได้สูงสุด 4 รูป'); break; }
+          if (!/^image\//.test(files[i].type)) { toast('ไฟล์นี้ไม่ใช่รูปภาพ'); continue; }
+          try {
+            photos.push(await readPhoto(files[i]));
+          } catch (err) {
+            toast(err && err.message ? err.message : 'อ่านรูปไม่สำเร็จ');
+          }
+        }
+        paintPreviews();
+      });
+    }
+
+    if (previewEl) {
+      previewEl.addEventListener('click', function (event) {
+        var btn = event.target.closest('[data-remove]');
+        if (!btn) return;
+        photos.splice(Number(btn.getAttribute('data-remove')), 1);
+        paintPreviews();
+      });
+    }
+
     form.addEventListener('submit', async function (event) {
       event.preventDefault();
       var button = form.querySelector('button[type="submit"]');
@@ -1027,7 +1154,8 @@
           lat: latEl && latEl.value ? latEl.value : undefined,
           lng: lngEl && lngEl.value ? lngEl.value : undefined,
           tags: $('post-tags').value,
-          desc: $('post-desc').value
+          desc: $('post-desc').value,
+          images: photos
         });
         var item = result.item;
         toast('เผยแพร่ประกาศแล้ว', 'ok');
@@ -1916,6 +2044,360 @@
     load();
   }
 
+  /* ---------- หาคนทำงาน / ลงหางาน ---------- */
+
+  var WORK_CATS = null;
+
+  async function loadWorkCats() {
+    if (WORK_CATS) return WORK_CATS;
+    var data = await API.get('/work-categories');
+    WORK_CATS = data.categories || [];
+    return WORK_CATS;
+  }
+
+  /* dialog เลือกจำนวนวันก่อนจ้าง (คืน { days } หรือ null) */
+  function hireDialog(worker) {
+    return new Promise(function (resolve) {
+      var dlg = document.createElement('dialog');
+      dlg.className = 'confirm-dialog';
+      dlg.innerHTML = '' +
+        '<p class="eyebrow">จ้างงาน · ' + esc(worker.catName) + '</p>' +
+        '<h2 class="display display-sm" style="font-size:24px">' + esc(worker.name) + '</h2>' +
+        '<p class="confirm-text">' + baht(worker.rate) + ' / วัน · ' + esc(worker.location) + '</p>' +
+        '<label class="field" style="text-align:left;margin-top:14px"><span>จำนวนวัน</span>' +
+          '<input type="number" id="hire-days" min="1" max="30" step="1" value="1"></label>' +
+        '<div class="summary-row summary-total" style="margin:6px 0 0"><span>รวมทั้งสิ้น</span>' +
+          '<span id="hire-total">' + baht(worker.rate) + '</span></div>' +
+        '<p class="fine-print">หักจาก FLO-RENT Wallet ทันที · ยกเลิกก่อนเริ่มงานได้เต็มจำนวน</p>' +
+        '<div class="confirm-actions">' +
+          '<button class="btn btn-ghost" type="button" data-confirm="no">ยกเลิก</button>' +
+          '<button class="btn btn-maroon" type="button" data-confirm="yes">ยืนยันการจ้าง</button>' +
+        '</div>';
+
+      var daysInput = dlg.querySelector('#hire-days');
+      var totalEl = dlg.querySelector('#hire-total');
+      var settled = false;
+
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        if (dlg.open) dlg.close();
+        dlg.remove();
+        resolve(value);
+      }
+
+      daysInput.addEventListener('input', function () {
+        var days = Math.max(1, Math.min(30, Number(daysInput.value) || 1));
+        totalEl.textContent = baht(worker.rate * days);
+      });
+
+      dlg.addEventListener('click', function (event) {
+        if (event.target === dlg) { finish(null); return; }
+        var btn = event.target.closest('[data-confirm]');
+        if (!btn) return;
+        if (btn.getAttribute('data-confirm') !== 'yes') { finish(null); return; }
+        var days = Math.max(1, Math.min(30, Number(daysInput.value) || 1));
+        finish({ days: days });
+      });
+      dlg.addEventListener('cancel', function (event) {
+        event.preventDefault();
+        finish(null);
+      });
+
+      document.body.appendChild(dlg);
+      dlg.showModal();
+      daysInput.focus();
+      daysInput.select();
+    });
+  }
+
+  async function initWork() {
+    var grid = $('worker-grid');
+    if (!grid) return;
+
+    var qEl = $('worker-q');
+    var countEl = $('worker-count');
+    var emptyEl = $('worker-empty');
+    var chipsEl = $('worker-cats');
+    var filterForm = $('worker-filter');
+    var hireList = $('hire-list');
+    var byId = {};
+
+    var state = { q: '', cat: param('cat') || 'all' };
+    if (qEl) qEl.value = state.q;
+
+    var cats = [];
+    try { cats = await loadWorkCats(); } catch (err) { cats = []; }
+
+    function chipsMarkup() {
+      return '<button type="button" class="chip chip-filter' + (state.cat === 'all' ? ' is-active' : '') + '" data-cat="all">ทั้งหมด</button>' +
+        cats.map(function (cat) {
+          return '<button type="button" class="chip chip-filter' + (state.cat === cat.key ? ' is-active' : '') + '" data-cat="' + esc(cat.key) + '">' +
+            cat.emoji + ' ' + esc(cat.name) + '</button>';
+        }).join('');
+    }
+
+    if (chipsEl) chipsEl.innerHTML = chipsMarkup();
+
+    function workerCard(worker) {
+      return '' +
+        '<article class="worker-card">' +
+          '<span class="worker-emoji" aria-hidden="true">' + esc(worker.avatar || worker.catEmoji) + '</span>' +
+          '<h3 class="worker-name">' + esc(worker.name) + '</h3>' +
+          '<p class="item-meta">' + esc(worker.catName) + ' · <span class="stars">★ ' +
+            Number(worker.rating || 0).toFixed(1) + '</span> <span class="muted">(' + Number(worker.reviews || 0) + ')</span></p>' +
+          '<p class="worker-rate"><strong>' + baht(worker.rate) + '</strong><span>/วัน</span></p>' +
+          '<p class="worker-bio">' + esc(worker.bio) + '</p>' +
+          '<p class="item-fine">📍 ' + esc(worker.location) + '</p>' +
+          '<button class="btn btn-maroon btn-sm" type="button" data-hire="' + esc(worker.id) + '">จ้างงาน</button>' +
+        '</article>';
+    }
+
+    async function render() {
+      grid.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+      try {
+        var query = new URLSearchParams();
+        query.set('cat', state.cat);
+        if (state.q) query.set('q', state.q);
+        var data = await API.get('/workers?' + query.toString());
+        byId = {};
+        data.workers.forEach(function (worker) { byId[worker.id] = worker; });
+        grid.innerHTML = data.workers.map(workerCard).join('');
+        grid.hidden = data.workers.length === 0;
+        if (emptyEl) emptyEl.hidden = data.workers.length !== 0;
+        if (countEl) countEl.textContent = 'พบ ' + data.count + ' คน';
+      } catch (err) {
+        grid.innerHTML = '<p class="muted">โหลดรายชื่อไม่สำเร็จ</p>';
+        showError(err);
+      }
+    }
+
+    if (chipsEl) {
+      chipsEl.addEventListener('click', function (event) {
+        var btn = event.target.closest('[data-cat]');
+        if (!btn) return;
+        state.cat = btn.getAttribute('data-cat');
+        chipsEl.innerHTML = chipsMarkup();
+        render();
+      });
+    }
+
+    if (filterForm) {
+      filterForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        state.q = qEl ? qEl.value.trim() : '';
+        render();
+      });
+    }
+
+    async function loadHires() {
+      if (!hireList) return;
+      if (!sessionUser) {
+        hireList.innerHTML = '<p class="muted" style="font-size:13.5px">เข้าสู่ระบบเพื่อดูประวัติการจ้างของคุณ</p>';
+        return;
+      }
+      try {
+        var data = await API.get('/hires');
+        if (!data.hires.length) {
+          hireList.innerHTML = '<p class="muted" style="font-size:13.5px">ยังไม่มีการจ้าง — เลือกคนทำงานด้านบนแล้วกด “จ้างงาน”</p>';
+          return;
+        }
+        hireList.innerHTML = '' +
+          '<div class="admin-table-wrap"><table class="admin-table"><thead><tr>' +
+            '<th>รหัส</th><th>คนทำงาน</th><th>จำนวน</th><th>ยอดชำระ</th><th>สถานะ</th><th></th>' +
+          '</tr></thead><tbody>' +
+            data.hires.map(function (hire) {
+              var status = hire.status === 'pending' ? 'รอเริ่มงาน' : (hire.status === 'cancelled' ? 'ยกเลิกแล้ว' : hire.status);
+              return '<tr>' +
+                '<td>' + esc(hire.code) + '</td>' +
+                '<td>' + esc(hire.workerName) +
+                  '<div class="muted" style="font-size:11.5px">' + esc(hire.workerCatName) + '</div></td>' +
+                '<td>' + Number(hire.days) + ' วัน</td>' +
+                '<td>' + flo(hire.total) + '</td>' +
+                '<td>' + esc(status) + '</td>' +
+                '<td>' + (hire.status === 'pending'
+                  ? '<button class="btn btn-ghost btn-sm" type="button" data-cancel-hire="' + esc(hire.code) + '">ยกเลิก</button>'
+                  : '') + '</td>' +
+              '</tr>';
+            }).join('') +
+          '</tbody></table></div>';
+      } catch (err) {
+        hireList.innerHTML = '<p class="muted" style="font-size:13.5px">โหลดประวัติการจ้างไม่สำเร็จ</p>';
+      }
+    }
+
+    grid.addEventListener('click', async function (event) {
+      var btn = event.target.closest('[data-hire]');
+      if (!btn) return;
+      if (!sessionUser) { requireLogin(); return; }
+
+      var worker = byId[btn.getAttribute('data-hire')];
+      if (!worker) return;
+
+      var picked = await hireDialog(worker);
+      if (!picked) return;
+
+      btn.disabled = true;
+      try {
+        var result = await API.post('/hires', { workerId: worker.id, days: picked.days });
+        if (sessionUser && typeof result.wallet === 'number') {
+          sessionUser.wallet = result.wallet;
+          paintWalletChip();
+        }
+        toast('จ้าง ' + worker.name + ' แล้ว · ' + result.hire.code, 'ok');
+        await loadHires();
+      } catch (err) {
+        if (err.status === 401) { requireLogin(); return; }
+        showError(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    if (hireList) {
+      hireList.addEventListener('click', async function (event) {
+        var btn = event.target.closest('[data-cancel-hire]');
+        if (!btn) return;
+        var code = btn.getAttribute('data-cancel-hire');
+        var ok = await confirmDialog({
+          eyebrow: 'ยกเลิกการจ้าง',
+          title: 'ยกเลิก ' + code + '?',
+          message: 'เงินค่าจ้างจะถูกคืนเข้ากระเป๋าเต็มจำนวน และคนทำงานจะเห็นว่ายกเลิกแล้ว',
+          confirmText: 'ยกเลิกการจ้าง',
+          cancelText: 'ปิด'
+        });
+        if (!ok) return;
+
+        btn.disabled = true;
+        try {
+          var result = await API.patch('/hires/' + encodeURIComponent(code), { action: 'cancel' });
+          if (sessionUser && typeof result.wallet === 'number') {
+            sessionUser.wallet = result.wallet;
+            paintWalletChip();
+          }
+          toast('ยกเลิกการจ้างแล้ว · คืน ' + flo(result.hire.total), 'ok');
+          await loadHires();
+        } catch (err) {
+          btn.disabled = false;
+          showError(err);
+        }
+      });
+    }
+
+    render();
+    loadHires();
+  }
+
+  async function initJobs() {
+    var form = $('job-form');
+    if (!form) return;
+
+    var catSelect = $('job-cat');
+    var listEl = $('job-list');
+    var chipsEl = $('job-cats');
+    var msg = $('job-msg');
+    var state = { cat: param('cat') || 'all' };
+
+    var cats = [];
+    try { cats = await loadWorkCats(); } catch (err) { cats = []; }
+
+    catSelect.innerHTML = cats.map(function (cat) {
+      return '<option value="' + esc(cat.key) + '">' + cat.emoji + ' ' + esc(cat.name) + '</option>';
+    }).join('');
+
+    function chipsMarkup() {
+      return '<button type="button" class="chip chip-filter' + (state.cat === 'all' ? ' is-active' : '') + '" data-cat="all">ทั้งหมด</button>' +
+        cats.map(function (cat) {
+          return '<button type="button" class="chip chip-filter' + (state.cat === cat.key ? ' is-active' : '') + '" data-cat="' + esc(cat.key) + '">' +
+            cat.emoji + ' ' + esc(cat.name) + '</button>';
+        }).join('');
+    }
+
+    function jobCard(job) {
+      var mine = !!(job.userId && sessionUser && job.userId === sessionUser.id);
+      return '' +
+        '<article class="job-card">' +
+          '<div class="job-main">' +
+            '<h3 class="job-title">' + esc(job.title) + '</h3>' +
+            '<p class="item-meta">' + job.catEmoji + ' ' + esc(job.catName) + ' · โดย ' + esc(job.name) +
+              (mine ? ' <span class="chip chip-light">ของคุณ</span>' : '') + '</p>' +
+            '<p class="job-desc">' + esc(job.desc) + '</p>' +
+            '<p class="item-fine">📍 ' + esc(job.location) + (job.start ? ' · เริ่ม ' + thDate(job.start) : '') + '</p>' +
+          '</div>' +
+          '<div class="job-side">' +
+            '<p class="worker-rate"><strong>' + baht(job.rate) + '</strong><span>/วัน</span></p>' +
+            '<p class="item-fine">' + Number(job.days) + ' วัน · รวม ' + baht(job.total) + '</p>' +
+            '<a class="btn btn-ghost btn-sm" href="work.html?cat=' + encodeURIComponent(job.cat) + '">หาคนทำงาน</a>' +
+          '</div>' +
+        '</article>';
+    }
+
+    async function loadJobs() {
+      if (!listEl) return;
+      listEl.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+      try {
+        var data = await API.get('/jobs?cat=' + encodeURIComponent(state.cat));
+        if (!data.jobs.length) {
+          listEl.innerHTML = '<p class="muted">ยังไม่มีงานในหมวดนี้ — ประกาศของคุณจะเป็นรายการแรก</p>';
+          return;
+        }
+        listEl.innerHTML = data.jobs.map(jobCard).join('');
+      } catch (err) {
+        listEl.innerHTML = '<p class="muted">โหลดรายการงานไม่สำเร็จ</p>';
+        showError(err);
+      }
+    }
+
+    if (chipsEl) {
+      chipsEl.innerHTML = chipsMarkup();
+      chipsEl.addEventListener('click', function (event) {
+        var btn = event.target.closest('[data-cat]');
+        if (!btn) return;
+        state.cat = btn.getAttribute('data-cat');
+        chipsEl.innerHTML = chipsMarkup();
+        loadJobs();
+      });
+    }
+
+    form.addEventListener('submit', async function (event) {
+      event.preventDefault();
+      if (!sessionUser) { requireLogin(); return; }
+
+      var button = form.querySelector('button[type="submit"]');
+      if (msg) { msg.textContent = ''; msg.className = 'form-msg'; }
+      button.disabled = true;
+      button.textContent = 'กำลังเผยแพร่...';
+
+      try {
+        var result = await API.post('/jobs', {
+          title: $('job-title').value,
+          cat: catSelect.value,
+          rate: $('job-rate').value,
+          days: $('job-days').value,
+          start: $('job-start').value,
+          location: $('job-location').value,
+          desc: $('job-desc').value
+        });
+        toast('ประกาศหางานแล้ว · ' + result.job.title, 'ok');
+        form.reset();
+        if ($('job-days')) $('job-days').value = '1';
+        button.disabled = false;
+        button.textContent = 'เผยแพร่ประกาศหางาน';
+        state.cat = 'all';
+        if (chipsEl) chipsEl.innerHTML = chipsMarkup();
+        await loadJobs();
+      } catch (err) {
+        button.disabled = false;
+        button.textContent = 'เผยแพร่ประกาศหางาน';
+        if (err.status === 401) { requireLogin(); return; }
+        if (msg) { msg.textContent = err.message; msg.className = 'form-msg is-error'; }
+        showError(err);
+      }
+    });
+
+    loadJobs();
+  }
+
   /* ---------- bootstrap ---------- */
 
   document.addEventListener('DOMContentLoaded', function () {
@@ -1924,7 +2406,8 @@
       return;
     }
 
-    initHeader().then(function () {
+    initHeader().then(async function () {
+      await loadCategories();
       showFlash();
       initHome().catch(showError);
       initBrowse().catch(showError);
@@ -1935,6 +2418,8 @@
       initProfile().catch(showError);
       initBookings().catch(showError);
       initWallet().catch(showError);
+      initWork().catch(showError);
+      initJobs().catch(showError);
     });
   });
 })();

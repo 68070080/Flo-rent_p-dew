@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>หาคนทำงาน · FLO-RENT WORK</title>
+<meta name="description" content="หาคนทำงานรายวันสายโปรดักชันและครีเอทีฟ เช่น Catering 1 วัน 400 บาท จ่ายผ่าน FLO-RENT Wallet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="page">
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="logo" href="index.html">FLO<span>-</span>RENT</a>
+      <nav class="nav">
+        <a href="browse.html">สินค้าทั้งหมด</a>
+        <a href="look-for.html">LOOK FOR</a>
+        <a href="work.html" class="is-active">หาคนทำงาน</a>
+        <a href="jobs.html">ลงหางาน</a>
+      </nav>
+      <a class="btn btn-maroon btn-sm" href="jobs.html">ลงหางาน</a>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>หาคนทำงาน</h1>
+      <p>เช่าคนทำงานเป็นรายวัน ทั้งสายโปรดักชันและครีเอทีฟ — เลือกหมวดหมู่ ดูเรตค่าจ้างต่อวัน แล้วกด “จ้างงาน” ได้ทันที</p>
+    </div>
+
+    <form class="filter-panel" id="worker-filter">
+      <div class="search-bar" style="background:#222b40;border:1px solid var(--line)">
+        <input type="search" id="worker-q" placeholder="ค้นหาชื่อ / ทักษะ / พื้นที่" aria-label="ค้นหาคนทำงาน" style="color:var(--cream)">
+        <button type="submit" aria-label="ค้นหา">🔍</button>
+      </div>
+      <div class="filter-cats" id="worker-cats"></div>
+    </form>
+
+    <div class="result-bar">
+      <span id="worker-count">พบ 0 คน</span>
+      <span class="muted" style="font-size:12px">จ่ายผ่าน FLO-RENT Wallet · ยกเลิกก่อนเริ่มงานได้</span>
+    </div>
+
+    <div class="worker-grid" id="worker-grid"></div>
+
+    <div class="empty" id="worker-empty" hidden>
+      <h2 class="display display-sm">ไม่พบคนทำงานที่ตรงกัน</h2>
+      <p class="muted">ลองเปลี่ยนหมวดหมู่ หรือล้างคำค้นหา</p>
+      <a class="btn btn-cream" href="jobs.html">ประกาศหางานเอง</a>
+    </div>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>การจ้างของฉัน</h2>
+        <a class="btn btn-ghost btn-sm" href="jobs.html">ดูงานที่เปิดรับ</a>
+      </div>
+      <div class="hire-list" id="hire-list"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-bottom" style="margin-top:0;border-top:0;padding-top:0">
+        <span>© 2026 FLO-RENT · HMMM! &amp; CO.</span>
+        <span>ผู้ใช้งานต้องมีอายุ 15 ปีขึ้นไป</span>
+      </div>
+    </div>
+  </footer>
+</div>
+<script src="js/data.js"></script>
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
