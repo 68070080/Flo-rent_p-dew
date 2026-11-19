@@ -579,6 +579,15 @@
         link.textContent = item[0];
         headerNav.appendChild(link);
       });
+
+      /* ปุ่มลงประกาศในเมนู — ใช้แทนปุ่มบนหัวเว็บเมื่อจอเล็ก (ดู style.css) */
+      if (!headerNav.querySelector('.nav-post')) {
+        var postLink = document.createElement('a');
+        postLink.href = 'post.html';
+        postLink.className = 'nav-post';
+        postLink.textContent = 'ลงประกาศให้เช่า';
+        headerNav.appendChild(postLink);
+      }
     }
 
     if (sessionUser) {

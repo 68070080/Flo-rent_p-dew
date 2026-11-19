@@ -856,7 +856,6 @@ p { margin: 0 0 12px; }
 }
 @media (max-width: 760px) {
   .container { width: calc(100% - 32px); }
-  .nav { display: none; }
   .header-inner { justify-content: space-between; }
   .logo { font-size: 20px; }
   .grid-4, .grid-3 { grid-template-columns: repeat(2, 1fr); gap: 14px; }
@@ -1045,4 +1044,132 @@ table.admin-table { width: 100%; border-collapse: collapse; font-size: 13.5px; m
   .worker-grid { grid-template-columns: 1fr; }
   .job-card { flex-direction: column; }
   .job-side { justify-items: start; text-align: left; }
+}
+
+/* ==========================================================================
+   MOBILE  (<= 760px)  — ปรับให้ใช้งานบนมือถือได้จริง
+   ========================================================================== */
+html { -webkit-text-size-adjust: 100%; }
+
+/* ลิงก์ “ลงประกาศ” ที่อยู่ในเมนู ใช้เฉพาะจอเล็กที่ซ่อนปุ่มบนหัวเว็บ */
+.nav a.nav-post { display: none; }
+
+@media (max-width: 760px) {
+  /* ---- header: แถวบน โลโก้ + บัญชี / แถวล่าง เมนูเลื่อนแนวนอน ---- */
+  .header-inner {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    min-height: 0;
+    padding-block: 9px;
+  }
+  .logo { font-size: 21px; margin-right: auto; }
+  .header-inner > .btn-maroon { padding: 9px 15px; font-size: 13px; }
+  .account-nav { margin-left: 0; gap: 8px; }
+  .nav {
+    order: 5;
+    flex: 1 0 100%;
+    width: 100%;
+    margin: 0;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 2px 0 3px;
+    font-size: 13px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav a {
+    flex: none;
+    white-space: nowrap;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: rgba(34, 43, 64, 0.45);
+  }
+  .nav a.is-active { background: var(--cream); color: var(--ink-3); border-color: var(--cream); }
+
+  /* ---- ฟิลด์ฟอร์ม 16px กัน Safari บน iOS ซูมเอง ---- */
+  .field input, .field select, .field textarea,
+  .status-select, .search-bar input,
+  .admin-toolbar input, .admin-toolbar select { font-size: 16px; }
+
+  /* ---- ตัวกรองหน้า browse ---- */
+  .filter-row { gap: 10px; }
+  .filter-row .field { width: auto !important; flex: 1 1 130px; margin-left: 0 !important; }
+  .filter-row .field input, .filter-row .field select { width: 100%; }
+  .filter-row .btn { flex: 1 0 100%; }
+  .filter-cats {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .filter-cats::-webkit-scrollbar { display: none; }
+  .chip-filter { flex: none; }
+
+  /* ---- เลย์เอาต์ที่กำหนด grid ไว้ใน inline style ---- */
+  .work-layout, .lookfor-layout { grid-template-columns: 1fr !important; gap: 18px !important; }
+
+  /* ---- หัวข้อ / เนื้อหา ---- */
+  .section-head { flex-wrap: wrap; gap: 10px; align-items: flex-start; }
+  .section-head h2 { font-size: clamp(22px, 7vw, 30px); }
+  .page-head { padding: 24px 0 16px; }
+  .page-head h1 { font-size: clamp(26px, 8vw, 40px); }
+  .page-head p { font-size: 14px; }
+  .detail-gallery { gap: 8px; }
+  .gallery-thumb { width: 64px; height: 64px; }
+  .thumb-lg { aspect-ratio: 4 / 3; border-radius: 18px; }
+  .booking-card, .wallet-card, .wallet-panel, .admin-panel { padding: 18px; }
+  .stat-strip .stat { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .admin-toolbar .field { flex: 1 1 140px; }
+  .admin-toolbar .field input, .admin-toolbar .field select { width: 100%; }
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+  .edit-dialog, .confirm-dialog { max-height: calc(100dvh - 32px); overflow: auto; }
+  .toast-stack { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+}
+
+@media (max-width: 560px) {
+  /* หัวเว็บแคบ: ย้ายปุ่มลงประกาศเข้าเมนูแทนเพื่อไม่ให้ล้นบรรทัด */
+  .header-inner > .btn-maroon { display: none; }
+  .nav a.nav-post {
+    display: inline-block;
+    order: -1;
+    background: var(--maroon);
+    color: var(--cream);
+    border-color: var(--maroon-2);
+  }
+
+  .section { padding: 40px 0; }
+  .hero { padding: 26px 0 34px; }
+  .footer-grid { grid-template-columns: 1fr; gap: 22px; }
+  .footer-bottom { margin-top: 22px; }
+  .grid-4, .grid-3 { gap: 12px; }
+  .item-body { padding: 12px 13px 15px; }
+  .item-price strong { font-size: 20px; }
+  .search-panel { border-radius: 18px; padding: 16px 14px 18px; }
+  .search-bar { padding-left: 14px; }
+  .hero-actions { gap: 10px; }
+  .hero-actions .btn { min-width: 0; }
+  .worker-card, .job-card { padding: 16px; }
+  .booking-item { padding: 12px 14px; gap: 12px; }
+  .booking-actions { width: 100%; }
+  .booking-actions .btn-mini, .booking-actions .btn-ghost { flex: 1; }
+  .request-card { padding: 14px; }
+  .cal-grid { gap: 3px; }
+  .cal-day { padding: 6px 0; font-size: 13px; }
+}
+
+@media (max-width: 420px) {
+  .container { width: calc(100% - 24px); }
+  .hero .wordmark { font-size: clamp(38px, 16vw, 64px); }
+  .category-grid { gap: 10px; }
+  .cat-card { min-height: 0; padding: 14px 12px 16px; }
+  .cat-emoji { font-size: 28px; margin: 4px 0 8px; }
+  .cat-name { font-size: 15px; }
+  .image-preview .image-item { width: 82px; height: 82px; }
+  .confirm-dialog, .edit-dialog { padding: 20px; }
+  .booking-item { grid-template-columns: 1fr; }
+  .booking-thumb { display: none; }
 }
